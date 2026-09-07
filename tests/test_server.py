@@ -18,9 +18,9 @@ TOKEN = "test-secret-that-is-not-a-real-credential"
 BASE_URL = "http://127.0.0.1:8765"
 READ_TOOLS = {
     "kicad_status", "get_board_info", "list_footprints", "list_nets",
-    "list_tracks", "get_selection",
+    "list_tracks", "get_selection", "get_bom", "export_bom",
 }
-WRITE_TOOLS = {"move_footprint", "add_track", "add_text", "save_board"}
+WRITE_TOOLS = {"move_footprint", "add_track", "add_text", "save_board", "update_bom_fields"}
 
 
 class FakeBridge:
@@ -70,6 +70,24 @@ class FakeBridge:
             "add_text", text=text, x_mm=x_mm, y_mm=y_mm,
             layer=layer, height_mm=height_mm,
         )
+
+    def get_bom(self, grouped=True, include_dnp=False, include_excluded=False, fields=None):
+        return self._record("get_bom", grouped=grouped, include_dnp=include_dnp,
+                            include_excluded=include_excluded, fields=fields)
+
+    def export_bom(self, grouped=True, include_dnp=False, include_excluded=False, fields=None,
+                   delimiter=","):
+        result = self._record("export_bom", grouped=grouped, include_dnp=include_dnp,
+                              include_excluded=include_excluded, fields=fields, delimiter=delimiter)
+        result["csv"] = 'References,Quantity,Value\n"R1,R2",2,10k\n'
+        return result
+
+    def update_bom_fields(self, references, fields=None, value=None, dnp=None,
+                          exclude_from_bom=None):
+        if "MISSING" in references:
+            raise BridgeError("Footprint MISSING does not exist")
+        return self._record("update_bom_fields", references=references, fields=fields,
+                            value=value, dnp=dnp, exclude_from_bom=exclude_from_bom)
 
     def save_board(self):
         return self._record("save_board")
@@ -294,3 +312,67 @@ async def test_dns_rebinding_host_is_rejected_even_with_token():
 def test_empty_http_token_is_rejected():
     with pytest.raises(ValueError, match="token"):
         create_http_app(create_server(FakeBridge()), "")
+
+
+@pytest.mark.anyio
+async def test_bom_defaults_filters_and_csv_content_over_mcp():
+    async with connected_session() as (bridge, session, _):
+        result = tool_data(await session.call_tool("get_bom", {}))
+        assert result["arguments"] == {
+            "grouped": True, "include_dnp": False, "include_excluded": False, "fields": None,
+        }
+        options = {"grouped": False, "include_dnp": True, "include_excluded": True,
+                   "fields": ["Manufacturer", "MPN"]}
+        assert tool_data(await session.call_tool("get_bom", options))["arguments"] == options
+        result = tool_data(await session.call_tool("export_bom", {}))
+        assert result["arguments"] == {
+            "grouped": True, "include_dnp": False, "include_excluded": False,
+            "fields": None, "delimiter": ",",
+        }
+        assert result["csv"] == 'References,Quantity,Value\n"R1,R2",2,10k\n'
+        result = tool_data(await session.call_tool("export_bom", dict(options, delimiter=";")))
+        assert result["arguments"] == dict(options, delimiter=";")
+        assert not any(method in WRITE_TOOLS for method, _ in bridge.calls)
+
+
+@pytest.mark.anyio
+async def test_bom_update_preserves_false_flags_and_unicode_fields():
+    async with connected_session() as (bridge, session, _):
+        options = {"references": ["R2", "R10"], "value": "10k Ω",
+                   "fields": {"Manufacturer": "Example", "MPN": "001234"},
+                   "dnp": False, "exclude_from_bom": False}
+        result = tool_data(await session.call_tool("update_bom_fields", options))
+        assert result == {"method": "update_bom_fields", "arguments": options}
+        assert bridge.calls == [("update_bom_fields", options)]
+        result = tool_data(await session.call_tool("update_bom_fields", {
+            "references": ["R2"], "fields": {"MPN": ""},
+        }))
+        assert result["arguments"] == {
+            "references": ["R2"], "fields": {"MPN": ""}, "value": None,
+            "dnp": None, "exclude_from_bom": None,
+        }
+
+
+@pytest.mark.anyio
+async def test_read_only_bom_can_export_but_cannot_update():
+    async with connected_session(read_only=True) as (bridge, session, _):
+        assert not (await session.call_tool("get_bom", {})).isError
+        result = tool_data(await session.call_tool("export_bom", {}))
+        assert "csv" in result
+        assert (await session.call_tool("update_bom_fields", {
+            "references": ["R1"], "dnp": True,
+        })).isError
+        assert [method for method, _ in bridge.calls] == ["get_bom", "export_bom"]
+
+
+@pytest.mark.anyio
+async def test_invalid_bom_argument_types_never_reach_bridge():
+    async with connected_session() as (bridge, session, _):
+        for tool, args in [
+            ("get_bom", {"fields": "MPN"}),
+            ("export_bom", {"delimiter": [","]}),
+            ("update_bom_fields", {"references": "R1", "dnp": True}),
+            ("update_bom_fields", {"references": ["R1"], "fields": {"MPN": 123}}),
+        ]:
+            assert (await session.call_tool(tool, args)).isError
+        assert bridge.calls == []

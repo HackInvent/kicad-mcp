@@ -27,7 +27,9 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
             "Operate on the PCB currently open in KiCad. Coordinates and sizes are in "
             "millimetres; angles are in degrees. Inspect the board before making changes. "
             "Edits are undoable in KiCad and are not saved until save_board is called. "
-            "Adding tracks does not perform routing or guarantee design-rule compliance."
+            "Adding tracks does not perform routing or guarantee design-rule compliance. "
+            "BOM tools use footprint data from the active PCB, not the schematic. "
+            "BOM exports return CSV content; they do not write files."
         ),
         website_url="https://github.com/HackInvent/kicad-mcp",
         stateless_http=True,
@@ -77,7 +79,35 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
         """Read the items currently selected in the PCB editor."""
         return await invoke("get_selection")
 
+    @server.tool(annotations=read)
+    async def get_bom(
+        grouped: bool = True, include_dnp: bool = False, include_excluded: bool = False,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Read the PCB bill of materials with quantities and custom fields; omit DNP/excluded parts by default."""
+        return await invoke("get_bom", grouped=grouped, include_dnp=include_dnp,
+                            include_excluded=include_excluded, fields=fields)
+
+    @server.tool(annotations=read)
+    async def export_bom(
+        grouped: bool = True, include_dnp: bool = False, include_excluded: bool = False,
+        fields: list[str] | None = None, delimiter: str = ",",
+    ) -> dict[str, Any]:
+        """Return a spreadsheet-safe CSV BOM as text, without writing a file; delimiter may be comma, semicolon or tab."""
+        return await invoke("export_bom", grouped=grouped, include_dnp=include_dnp,
+                            include_excluded=include_excluded, fields=fields, delimiter=delimiter)
+
     if not read_only:
+        @server.tool(annotations=edit)
+        async def update_bom_fields(
+            references: list[str], fields: dict[str, str] | None = None,
+            value: str | None = None, dnp: bool | None = None,
+            exclude_from_bom: bool | None = None,
+        ) -> dict[str, Any]:
+            """Update custom BOM fields, value or assembly flags on exact PCB references in one undo step; do not save or change the schematic."""
+            return await invoke("update_bom_fields", references=references, fields=fields,
+                                value=value, dnp=dnp, exclude_from_bom=exclude_from_bom)
+
         @server.tool(annotations=edit)
         async def move_footprint(
             reference: str, x_mm: float, y_mm: float,

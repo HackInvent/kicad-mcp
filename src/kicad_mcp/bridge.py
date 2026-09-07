@@ -35,6 +35,8 @@ from kipy.util.board_layer import (
 )
 from kipy.util.units import from_mm, to_mm
 
+from kicad_mcp import bom
+
 
 class BridgeError(RuntimeError):
     """An actionable error safe to expose to MCP clients."""
@@ -153,6 +155,8 @@ class KiCadBridge:
                 yield
             except BridgeError:
                 raise
+            except bom.BOMError as error:
+                raise BridgeError(str(error)) from None
             except KiCadConnectionError:
                 raise BridgeError(
                     "Cannot reach KiCad. Open KiCad 10+ PCB Editor, enable the IPC API "
@@ -382,6 +386,68 @@ class KiCadBridge:
                     )
                 result = _text(created[0])
             return {"text": result, "saved": False}
+
+    def get_bom(
+        self,
+        grouped: bool = True,
+        include_dnp: bool = False,
+        include_excluded: bool = False,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Read the PCB BOM, optionally grouping parts with identical full metadata."""
+        with self._operation("Reading BOM"):
+            bom.validate_options(grouped, include_dnp, include_excluded, fields)
+            board = self._board()
+            return bom.build_bom(
+                board.name, board.get_footprints(), grouped, include_dnp, include_excluded, fields
+            )
+
+    def export_bom(
+        self,
+        grouped: bool = True,
+        include_dnp: bool = False,
+        include_excluded: bool = False,
+        fields: list[str] | None = None,
+        delimiter: str = ",",
+    ) -> dict[str, Any]:
+        """Return spreadsheet-safe CSV text and metadata, without writing any file."""
+        with self._operation("Exporting BOM"):
+            bom.validate_delimiter(delimiter)
+            return bom.render_csv(
+                self.get_bom(grouped, include_dnp, include_excluded, fields), delimiter
+            )
+
+    def update_bom_fields(
+        self,
+        references: list[str],
+        fields: dict[str, str] | None = None,
+        value: str | None = None,
+        dnp: bool | None = None,
+        exclude_from_bom: bool | None = None,
+    ) -> dict[str, Any]:
+        """Change selected PCB fields/flags in one undo step, without saving."""
+        with self._operation("Updating BOM fields", mutation=True):
+            bom.validate_update(references, fields, value, dnp, exclude_from_bom)
+            board = self._board()
+            prepared = bom.prepare_updates(
+                board.get_footprints(), references, fields, value, dnp, exclude_from_bom
+            )
+            if prepared:
+                with self._commit(board, "MCP: update BOM fields"):
+                    updated = board.update_items(prepared)
+                    bom.verify_updates(prepared, updated)
+                    components = bom.build_bom(
+                        board.name, updated, grouped=False, include_dnp=True, include_excluded=True
+                    )["rows"]
+            else:
+                components = []
+            return {
+                "board": board.name,
+                "updated_count": len(components),
+                "references": [row["references"][0] for row in components],
+                "components": components,
+                "saved": False,
+            }
 
     def save_board(self) -> dict[str, Any]:
         with self._operation("Saving board", mutation=True):
