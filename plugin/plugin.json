@@ -1,0 +1,28 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "org.hackinvent.kicad-mcp",
+  "name": "HackInvent KiCad MCP",
+  "description": "Expose the open PCB to MCP clients through KiCad's official IPC API.",
+  "runtime": {
+    "type": "python",
+    "min_version": "3.10"
+  },
+  "actions": [
+    {
+      "identifier": "start-server",
+      "name": "Start MCP server",
+      "description": "Start the local MCP server for this KiCad instance.",
+      "entrypoint": "start.py",
+      "scopes": ["pcb"],
+      "show-button": true
+    },
+    {
+      "identifier": "stop-server",
+      "name": "Stop MCP server",
+      "description": "Stop the MCP server started for this KiCad instance.",
+      "entrypoint": "stop.py",
+      "scopes": ["pcb"],
+      "show-button": true
+    }
+  ]
+}
