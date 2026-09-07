@@ -2,45 +2,45 @@
 
 [![CI](https://github.com/HackInvent/kicad-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/HackInvent/kicad-mcp/actions/workflows/ci.yml)
 
-Un plugin **KiCad 10+** qui démarre un serveur [Model Context Protocol](https://modelcontextprotocol.io/) pour travailler sur le PCB ouvert depuis un assistant compatible MCP.
+A **KiCad 10+** plugin that starts a [Model Context Protocol](https://modelcontextprotocol.io/) server, letting MCP-compatible assistants work with the open PCB.
 
-Le plugin utilise l’API IPC officielle de KiCad et la bibliothèque `kicad-python`, sans bindings `pcbnew`/SWIG. Il propose deux actions : **Start MCP server** et **Stop MCP server**. Un mode **stdio** permet aussi au client MCP de lancer directement le serveur.
+The plugin uses KiCad’s official IPC API and the `kicad-python` library, without `pcbnew`/SWIG bindings. It provides two actions: **Start MCP server** and **Stop MCP server**. A **stdio** mode also lets an MCP client launch the server directly.
 
-**Version 0.1.0, alpha.** Le protocole MCP, le cycle de vie du serveur et les opérations sont testés automatiquement. Les tests KiCad utilisent les vrais objets de `kicad-python` avec un éditeur simulé ; le contrôle dans une véritable interface KiCad reste à effectuer. Le projet concerne l’éditeur PCB, avec une instance graphique ouverte.
+**Version 0.1.0, alpha.** The MCP protocol, server lifecycle and operations are covered by automated tests. The KiCad tests use real `kicad-python` objects with a simulated editor; validation in a real KiCad interface is still pending. This project targets the PCB editor and requires a running GUI instance.
 
-## Outils disponibles
+## Available tools
 
-| Outil MCP | Fonction |
+| MCP tool | Function |
 |---|---|
-| `kicad_status` | Vérifier la connexion et la version de KiCad |
-| `get_board_info` | Lire le nom de la carte, ses couches et ses nombres d’objets |
-| `list_footprints` | Lire références, valeurs, positions, rotations et verrouillage ; filtre exact facultatif |
-| `list_nets` | Lister les réseaux électriques |
-| `list_tracks` | Lire les pistes droites et courbes, leurs dimensions et leurs réseaux |
-| `get_selection` | Lire les objets sélectionnés dans l’éditeur |
-| `move_footprint` | Déplacer un composant par sa référence et éventuellement le tourner |
-| `add_track` | Ajouter une piste droite sur une couche cuivre active |
-| `add_text` | Ajouter du texte sur la carte |
-| `save_board` | Sauvegarder explicitement le PCB dans son fichier actuel |
+| `kicad_status` | Check the connection and KiCad version |
+| `get_board_info` | Read the board name, layers and item counts |
+| `list_footprints` | Read references, values, positions, rotations and lock status; optional exact reference filter |
+| `list_nets` | List electrical nets |
+| `list_tracks` | Read straight and curved tracks, their dimensions and nets |
+| `get_selection` | Read the items selected in the editor |
+| `move_footprint` | Move a component by its reference and optionally rotate it |
+| `add_track` | Add a straight track on an enabled copper layer |
+| `add_text` | Add text to the board |
+| `save_board` | Explicitly save the PCB to its current file |
 
-Les distances sont en **millimètres**, les positions sont absolues et les angles en **degrés**. Les modifications créent une étape d’annulation dans KiCad. Elles ne déclenchent aucune sauvegarde automatique. `save_board` enregistre aussi les autres changements non sauvegardés présents dans l’éditeur.
+Distances are in **millimetres**, positions are absolute and angles are in **degrees**. Edits create an undo step in KiCad. They never trigger an automatic save. `save_board` also saves any other unsaved changes currently in the editor.
 
-`add_track` crée un segment ; il ne fait ni routage automatique, ni contrôle des règles électriques. Un composant verrouillé ou une référence ambiguë est refusé. Les empreintes contenant des éléments que `kicad-python` ne peut pas transformer correctement sont également refusées ; les pastilles, la géométrie standard et les modèles 3D sont pris en charge.
+`add_track` creates a segment; it does not perform autorouting or design-rule checks. Locked components and ambiguous references are rejected. Footprints containing items that `kicad-python` cannot safely transform are also rejected; pads, standard geometry and 3D models are supported.
 
-## Installer dans KiCad
+## Install in KiCad
 
-Prérequis : KiCad 10.0 ou plus récent, Python 3.10+ et son support `venv`/`pip`, ainsi qu’un accès réseau lors de la première préparation des dépendances. Sur Debian/Ubuntu, le paquet `python3-venv` peut être nécessaire.
+Requirements: KiCad 10.0 or later, Python 3.10+ with `venv`/`pip` support, and network access when dependencies are first installed. On Debian/Ubuntu, you may need the `python3-venv` package.
 
-### Avec le gestionnaire de plugins
+### Using the Plugin and Content Manager
 
-1. Télécharger `hackinvent-kicad-mcp-0.1.0.zip` depuis les [versions publiées](https://github.com/HackInvent/kicad-mcp/releases).
-2. Dans le gestionnaire de projets KiCad, ouvrir **Plugin and Content Manager**, puis **Install from File** et choisir ce ZIP.
-3. Activer l’API KiCad dans les préférences de plugins, puis ouvrir un PCB et recharger les plugins ou redémarrer l’éditeur.
-4. Attendre la création de l’environnement Python du plugin, puis lancer **Start MCP server**.
+1. Download `hackinvent-kicad-mcp-0.1.0.zip` from the [releases page](https://github.com/HackInvent/kicad-mcp/releases).
+2. In the KiCad project manager, open **Plugin and Content Manager**, choose **Install from File** and select the ZIP.
+3. Enable the KiCad API in the plugin preferences, then open a PCB and reload the plugins or restart the editor.
+4. Wait for the plugin’s Python environment to be created, then run **Start MCP server**.
 
-Le paquet n’est pas encore référencé dans le catalogue officiel KiCad. Il s’installe depuis le fichier ZIP.
+The package is not yet listed in KiCad’s official plugin catalogue. Install it from the ZIP file.
 
-### Depuis le dépôt
+### From the repository
 
 ```bash
 git clone https://github.com/HackInvent/kicad-mcp.git
@@ -48,53 +48,53 @@ cd kicad-mcp
 python3 scripts/install_plugin.py --version 10.0
 ```
 
-L’installateur copie le plugin dans le répertoire utilisateur KiCad. Il ne modifie pas les fichiers de programme. Les chemins habituels sont :
+The installer copies the plugin into KiCad’s user directory. It does not modify KiCad’s program files. Typical paths are:
 
-- Linux : `~/.local/share/KiCad/10.0/plugins/org.hackinvent.kicad-mcp`
-- macOS : `~/Documents/KiCad/10.0/plugins/org.hackinvent.kicad-mcp`
-- Windows : `%USERPROFILE%\Documents\KiCad\10.0\plugins\org.hackinvent.kicad-mcp`
+- Linux: `~/.local/share/KiCad/10.0/plugins/org.hackinvent.kicad-mcp`
+- macOS: `~/Documents/KiCad/10.0/plugins/org.hackinvent.kicad-mcp`
+- Windows: `%USERPROFILE%\Documents\KiCad\10.0\plugins\org.hackinvent.kicad-mcp`
 
-`--destination /chemin/exact/du/plugin` permet de choisir un autre emplacement, notamment si Documents est redirigé. Pour mettre à jour cette installation, ajouter `--overwrite` ; l’installateur vérifie d’abord l’identifiant du plugin existant. Éviter d’installer simultanément le ZIP et une copie manuelle du même plugin.
+Use `--destination /exact/path/to/plugin` to choose another location, for example when your Documents folder is redirected. To update this installation, add `--overwrite`; the installer first checks the existing plugin’s identifier. Avoid installing both the ZIP and a manual copy of the same plugin.
 
-Sur Windows, utiliser `py` ou `python` à la place de `python3` selon l’installation.
+On Windows, use `py` or `python` instead of `python3`, depending on your installation.
 
-## Connecter un client MCP en HTTP
+## Connect an MCP client over HTTP
 
-Après **Start MCP server**, le serveur écoute par défaut sur :
+After running **Start MCP server**, the server listens at this address by default:
 
 ```text
 http://127.0.0.1:8765/mcp
 ```
 
-Un jeton propre au serveur protège toutes ses routes. Depuis le dépôt, récupérer les paramètres des serveurs actifs :
+A server-specific token protects every route. From the repository, retrieve the connection settings for running servers:
 
 ```bash
 python3 scripts/connection_info.py
 ```
 
-Cette commande utilise uniquement la bibliothèque standard Python. Elle affiche les champs `url` et `token` à fournir au client :
+This command uses only the Python standard library. It displays the `url` and `token` fields to provide to your client:
 
 ```text
 Transport : Streamable HTTP
 URL       : http://127.0.0.1:8765/mcp
-En-tête   : Authorization: Bearer <valeur du champ token>
+Header    : Authorization: Bearer <value of the token field>
 ```
 
-Le format de configuration dépend du client. Il doit permettre de définir cet en-tête HTTP. L’authentification est un jeton local partagé, sans serveur OAuth ; un client qui impose OAuth ne peut pas utiliser ce mode directement. Les clients navigateur qui envoient un en-tête `Origin` sont refusés ; utiliser un client MCP natif ou le mode stdio.
+The configuration format depends on your client. It must support setting this HTTP header. Authentication uses a shared local token, without an OAuth server; clients that require OAuth cannot use this mode directly. Browser clients that send an `Origin` header are rejected; use a native MCP client or stdio mode.
 
-Le jeton est renouvelé à chaque démarrage, sauf si `KICAD_MCP_TOKEN` est défini. Il est distinct du jeton IPC interne de KiCad. Ne pas inclure ces valeurs dans les issues ou les commits.
+The token changes on each startup unless `KICAD_MCP_TOKEN` is set. It is separate from KiCad’s internal IPC token. Do not include either token in issues or commits.
 
-Sans copie du dépôt, les informations de connexion sont aussi dans un fichier JSON de session :
+Without a copy of the repository, you can also find the connection settings in a session JSON file:
 
-| Système | Répertoire des sessions |
+| System | Session directory |
 |---|---|
-| Linux | `$XDG_STATE_HOME/kicad-mcp`, sinon `~/.local/state/kicad-mcp` |
+| Linux | `$XDG_STATE_HOME/kicad-mcp`, or `~/.local/state/kicad-mcp` if unset |
 | macOS | `~/Library/Application Support/kicad-mcp` |
 | Windows | `%LOCALAPPDATA%\kicad-mcp` |
 
-Les fichiers contiennent un secret ; les permissions POSIX sont limitées à leur propriétaire. **Stop MCP server** arrête le serveur associé à l’instance KiCad qui lance l’action. Les verrous de session empêchent deux démarrages concurrents pour la même instance.
+These files contain a secret; POSIX permissions restrict access to their owner. **Stop MCP server** stops the server associated with the KiCad instance that launches the action. Session locks prevent concurrent startups for the same instance.
 
-## Mode stdio et développement
+## Stdio mode and development
 
 ```bash
 python3 -m venv .venv
@@ -102,24 +102,24 @@ python3 -m venv .venv
 .venv/bin/kicad-mcp serve --transport stdio
 ```
 
-Sous Windows, les exécutables de l’environnement sont dans `.venv\Scripts\`.
+On Windows, the environment’s executables are in `.venv\Scripts\`.
 
-Pour un client qui accepte le format `mcpServers`, adapter les chemins de cet exemple :
+For a client that accepts the `mcpServers` format, adapt the paths in this example:
 
 ```json
 {
   "mcpServers": {
     "kicad": {
-      "command": "/CHEMIN/ABSOLU/kicad-mcp/.venv/bin/python",
+      "command": "/ABSOLUTE/PATH/kicad-mcp/.venv/bin/python",
       "args": ["-m", "kicad_mcp", "serve", "--transport", "stdio"]
     }
   }
 }
 ```
 
-Dans ce mode, le client MCP gère la durée de vie du serveur : il n’est pas nécessaire de cliquer sur **Start MCP server**. L’éditeur KiCad doit rester ouvert et son API activée. Avec une seule instance, `kicad-python` cherche le socket KiCad par défaut. Utiliser `--socket` ou `KICAD_API_SOCKET` pour cibler une autre instance. Après un redémarrage de KiCad, relancer le serveur pour reprendre la bonne session.
+In this mode, the MCP client manages the server’s lifecycle; you do not need to click **Start MCP server**. The KiCad editor must remain open with its API enabled. With a single instance, `kicad-python` looks for the default KiCad socket. Use `--socket` or `KICAD_API_SOCKET` to target another instance. After restarting KiCad, restart the server to connect to the correct session.
 
-Autres commandes, après installation Python :
+Additional commands after installing the Python package:
 
 ```bash
 kicad-mcp serve --transport streamable-http --port 8765
@@ -129,22 +129,22 @@ kicad-mcp status --show-token
 kicad-mcp stop
 ```
 
-`--read-only` retire les quatre outils d’écriture et bloque aussi les mutations au niveau de l’adaptateur KiCad. `status` masque le jeton par défaut. En présence de plusieurs serveurs, `stop --socket /chemin/du/socket` sélectionne l’instance à arrêter.
+`--read-only` removes the four write tools and also blocks mutations in the KiCad adapter. `status` hides the token by default. When multiple servers are running, use `stop --socket /path/to/socket` to select the instance to stop.
 
-### Configuration du lancement depuis KiCad
+### Configure startup from KiCad
 
-Définir ces variables **avant de lancer KiCad** :
+Set these variables **before starting KiCad**:
 
-| Variable | Effet |
+| Variable | Effect |
 |---|---|
-| `KICAD_MCP_PORT` | Port HTTP, `8765` par défaut ; `0` choisit un port libre |
-| `KICAD_MCP_TOKEN` | Jeton HTTP fixe facultatif pour garder la configuration du client |
-| `KICAD_MCP_READ_ONLY=1` | Activer la lecture seule |
-| `KICAD_MCP_STATE_DIR` | Déplacer le répertoire des sessions |
+| `KICAD_MCP_PORT` | HTTP port, `8765` by default; `0` selects an available port |
+| `KICAD_MCP_TOKEN` | Optional fixed HTTP token to keep the client configuration unchanged |
+| `KICAD_MCP_READ_ONLY=1` | Enable read-only mode |
+| `KICAD_MCP_STATE_DIR` | Override the session directory |
 
-KiCad transmet automatiquement `KICAD_API_SOCKET` et `KICAD_API_TOKEN` aux actions du plugin. Pour plusieurs instances simultanées, utiliser des ports différents ou `KICAD_MCP_PORT=0`, puis lire les URL avec `connection_info.py`.
+KiCad automatically passes `KICAD_API_SOCKET` and `KICAD_API_TOKEN` to plugin actions. For multiple simultaneous instances, use different ports or `KICAD_MCP_PORT=0`, then retrieve their URLs with `connection_info.py`.
 
-## Vérification
+## Verification
 
 ```bash
 .venv/bin/ruff check .
@@ -153,35 +153,35 @@ KiCad transmet automatiquement `KICAD_API_SOCKET` et `KICAD_API_TOKEN` aux actio
 python3 scripts/build_plugin.py
 ```
 
-La CI effectue ces contrôles sous Python 3.10, 3.12 et 3.13. Les tests couvrent les vrais clients MCP HTTP/stdio, les erreurs, les restrictions d’accès, les démarrages répétés, l’arrêt, les unités KiCad, le retour arrière des transactions et les archives PCM. Ils ne nécessitent pas une interface KiCad.
+CI runs these checks on Python 3.10, 3.12 and 3.13. Tests cover real HTTP/stdio MCP clients, errors, access restrictions, repeated startups, shutdown, KiCad units, transaction rollback and PCM archives. They do not require a KiCad GUI.
 
-Pour le contrôle manuel sur une **copie d’un PCB de test** :
+For a manual check on a **copy of a test PCB**:
 
-1. Installer le plugin et démarrer le serveur depuis KiCad.
-2. Connecter un client, appeler `kicad_status`, `get_board_info` et `list_footprints`.
-3. Déplacer un composant déverrouillé et vérifier ses coordonnées, puis annuler dans KiCad.
-4. Ajouter un texte et une piste sur des couches actives ; vérifier le résultat et le DRC dans l’éditeur.
-5. Appeler `save_board` seulement si le résultat est attendu.
-6. Arrêter le serveur avec l’action KiCad et vérifier que le client se déconnecte.
+1. Install the plugin and start the server from KiCad.
+2. Connect a client and call `kicad_status`, `get_board_info` and `list_footprints`.
+3. Move an unlocked component and check its coordinates, then undo the change in KiCad.
+4. Add text and a track on enabled layers; inspect the result and run DRC in the editor.
+5. Call `save_board` only if the result is as expected.
+6. Stop the server using the KiCad action and confirm that the client disconnects.
 
-Si le plugin n’apparaît pas, vérifier l’environnement Python et les messages de KiCad. Si le serveur indique qu’il ne peut pas se connecter, vérifier l’API activée, le PCB ouvert et le socket sélectionné. Si le port est occupé, choisir un autre `KICAD_MCP_PORT`.
+If the plugin does not appear, check the Python environment and KiCad’s messages. If the server cannot connect, check that the API is enabled, a PCB is open and the correct socket is selected. If the port is occupied, choose another `KICAD_MCP_PORT`.
 
-## Architecture et références
+## Architecture and references
 
 ```mermaid
 flowchart LR
-    A[Client MCP] -->|Streamable HTTP local ou stdio| B[Serveur Python MCP]
-    B --> C[Adaptateur KiCad sérialisé]
-    C -->|IPC Protobuf / NNG| D[Éditeur PCB KiCad]
-    P[Action du plugin KiCad] -->|Démarrer / arrêter| B
+    A[MCP client] -->|Local Streamable HTTP or stdio| B[Python MCP server]
+    B --> C[KiCad adapter with serialized access]
+    C -->|IPC Protobuf / NNG| D[KiCad PCB editor]
+    P[KiCad plugin action] -->|Start / stop| B
 ```
 
-- `src/kicad_mcp/server.py` : outils MCP et authentification HTTP.
-- `src/kicad_mcp/bridge.py` : accès IPC, conversions et transactions d’édition.
-- `src/kicad_mcp/__main__.py` : transports, sessions et commandes de contrôle.
-- `plugin/` : manifeste IPC, dépendances et actions KiCad.
-- `scripts/` : installation locale, informations de connexion et archive PCM.
+- `src/kicad_mcp/server.py`: MCP tools and HTTP authentication.
+- `src/kicad_mcp/bridge.py`: IPC access, conversions and edit transactions.
+- `src/kicad_mcp/__main__.py`: transports, sessions and control commands.
+- `plugin/`: IPC manifest, dependencies and KiCad actions.
+- `scripts/`: local installation, connection settings and PCM packaging.
 
-Sources officielles utilisées : [API IPC KiCad](https://dev-docs.kicad.org/en/apis-and-binding/ipc-api/for-addon-developers/), [bibliothèque kicad-python](https://gitlab.com/kicad/code/kicad-python), [format des paquets KiCad](https://dev-docs.kicad.org/en/addons/), [SDK MCP Python, branche 1.x](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x).
+Official references: [KiCad IPC API](https://dev-docs.kicad.org/en/apis-and-binding/ipc-api/for-addon-developers/), [kicad-python library](https://gitlab.com/kicad/code/kicad-python), [KiCad package format](https://dev-docs.kicad.org/en/addons/), [MCP Python SDK, 1.x branch](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x).
 
-Licence [MIT](LICENSE).
+[MIT](LICENSE) license.
