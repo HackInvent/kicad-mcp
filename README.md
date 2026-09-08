@@ -1,6 +1,12 @@
 # KiCad MCP — HackInvent
 
-[![CI](https://github.com/HackInvent/kicad-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/HackInvent/kicad-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/HackInvent/kicad-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/HackInvent/kicad-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/HackInvent/kicad-mcp?include_prereleases&sort=semver)](https://github.com/HackInvent/kicad-mcp/releases)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange)](#verification)
+[![KiCad 10+](https://img.shields.io/badge/KiCad-10%2B-314CB0?logo=kicad&logoColor=white)](#install-in-kicad)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](#install-in-kicad)
+[![License: MIT](https://img.shields.io/github/license/HackInvent/kicad-mcp)](LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/HackInvent/kicad-mcp/total)](https://github.com/HackInvent/kicad-mcp/releases)
 
 A **KiCad 10+** plugin that starts a [Model Context Protocol](https://modelcontextprotocol.io/) server, letting MCP-compatible assistants work with the open PCB.
 
