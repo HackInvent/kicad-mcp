@@ -104,6 +104,18 @@ def test_pcm_archive_is_reproducible_and_runs_without_installing_project(tmp_pat
     )
     assert result.returncode == 0, result.stderr
     assert "serve" in result.stdout
+    # --help does not import the adapters. Discover tools from the extracted
+    # plugin too, so a missing module cannot hide behind the lazy CLI startup.
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import asyncio, json; from kicad_mcp import __version__; "
+            "from kicad_mcp.server import create_server; "
+            "print(json.dumps({'version': __version__, "
+            "'tools': len(asyncio.run(create_server().list_tools()))}))"
+        )], cwd=tmp_path, env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"version": version["version"], "tools": 28}
 
 
 def test_installer_respects_documents_home_and_version(tmp_path):

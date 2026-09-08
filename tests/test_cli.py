@@ -91,7 +91,7 @@ def test_real_stdio_client_initialization_and_disconnected_kicad(tmp_path):
                 info = await session.initialize()
                 assert info.serverInfo.name == "hackinvent-kicad-mcp"
                 tools = await session.list_tools()
-                assert len(tools.tools) == 8
+                assert len(tools.tools) == 15
                 result = await session.call_tool("kicad_status", {})
                 assert not result.isError
                 assert result.structuredContent["connected"] is False

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+This alpha release expands the server to 28 tools for PCB inspection, editing and manufacturing preparation. Validation in a real KiCad GUI and against an installed kicad-cli remains pending.
+
+- Add pad, via and zone inspection, exact UUID item details, layer visibility and stackup information, and per-net pad/track/via membership. Net membership explicitly does not verify physical connectivity.
+- Add selection and active/visible layer controls, through-hole via creation and transactional deletion of supported unlocked top-level items. Reject footprint children and grouped items when safe deletion cannot be established.
+- Add asynchronous zone refill with an explicit pending-completion result matching KiCad 10’s API behavior.
+- Add kicad-cli DRC reports and Gerber, drill, component-position and SVG exports. Commands use private copies of the last saved PCB and saved project context, without implicitly persisting changes in the original project. Reports identify that unsaved edits are excluded; DRC does not check schematic parity.
+- Check CLI/editor major-version compatibility, preserve reports in unique artifact directories and clean temporary source copies after each job. Configure the executable and artifact location using KICAD_MCP_CLI and KICAD_MCP_ARTIFACT_DIR.
+- Reject unconfirmed track/text creation when KiCad returns an object without an assigned UUID, and return actionable errors for stale item IDs.
+- Keep 15 read tools available in read-only mode; disable editor changes and file-producing operations at both MCP and adapter boundaries.
+- Extend automated coverage of the real MCP protocol, KiCad object serialization and transactions, and simulated CLI exports and failures. Update the English README with end-to-end examples and limitations.
+
 ## 0.2.0
 
 This alpha release adds a bill of materials workflow for the open PCB. Validation in a real KiCad GUI is still pending.

@@ -19,8 +19,16 @@ BASE_URL = "http://127.0.0.1:8765"
 READ_TOOLS = {
     "kicad_status", "get_board_info", "list_footprints", "list_nets",
     "list_tracks", "get_selection", "get_bom", "export_bom",
+    "list_pads", "list_vias", "list_zones", "get_item_details",
+    "get_board_layers", "get_board_stackup", "get_net_connections",
 }
-WRITE_TOOLS = {"move_footprint", "add_track", "add_text", "save_board", "update_bom_fields"}
+DESTRUCTIVE_TOOLS = {
+    "move_footprint", "add_track", "add_text", "save_board", "update_bom_fields",
+    "add_via", "delete_items", "refill_zones",
+}
+VIEW_TOOLS = {"set_selection", "set_active_layer", "set_visible_layers"}
+ARTIFACT_TOOLS = {"run_drc", "export_fabrication"}
+WRITE_TOOLS = DESTRUCTIVE_TOOLS | VIEW_TOOLS | ARTIFACT_TOOLS
 
 
 class FakeBridge:
@@ -48,6 +56,52 @@ class FakeBridge:
 
     def get_selection(self):
         return self._record("get_selection")
+
+    def list_pads(self, reference=None, net_name=None):
+        return self._record("list_pads", reference=reference, net_name=net_name)
+
+    def list_vias(self, net_name=None):
+        return self._record("list_vias", net_name=net_name)
+
+    def list_zones(self):
+        return self._record("list_zones")
+
+    def get_item_details(self, item_ids):
+        return self._record("get_item_details", item_ids=item_ids)
+
+    def get_board_layers(self):
+        return self._record("get_board_layers")
+
+    def get_board_stackup(self):
+        return self._record("get_board_stackup")
+
+    def get_net_connections(self, net_name):
+        return self._record("get_net_connections", net_name=net_name)
+
+    def set_selection(self, item_ids, mode="replace"):
+        return self._record("set_selection", item_ids=item_ids, mode=mode)
+
+    def set_active_layer(self, layer):
+        return self._record("set_active_layer", layer=layer)
+
+    def set_visible_layers(self, layers):
+        return self._record("set_visible_layers", layers=layers)
+
+    def add_via(self, x_mm, y_mm, diameter_mm=0.6, drill_mm=0.3, net_name=None):
+        return self._record("add_via", x_mm=x_mm, y_mm=y_mm,
+                            diameter_mm=diameter_mm, drill_mm=drill_mm, net_name=net_name)
+
+    def delete_items(self, item_ids):
+        return self._record("delete_items", item_ids=item_ids)
+
+    def refill_zones(self):
+        return self._record("refill_zones")
+
+    def run_drc(self, severity="all"):
+        return self._record("run_drc", severity=severity)
+
+    def export_fabrication(self, formats=None):
+        return self._record("export_fabrication", formats=formats)
 
     def move_footprint(self, reference, x_mm, y_mm, rotation_degrees=None):
         if reference == "MISSING":
@@ -140,7 +194,9 @@ async def test_initialization_tool_discovery_and_safety_annotations():
             assert tools[name].annotations.destructiveHint is False
         for name in WRITE_TOOLS:
             assert tools[name].annotations.readOnlyHint is False
-            assert tools[name].annotations.destructiveHint is True
+            assert tools[name].annotations.destructiveHint is (name in DESTRUCTIVE_TOOLS)
+        for name in VIEW_TOOLS:
+            assert tools[name].annotations.idempotentHint is True
         assert tools["save_board"].annotations.idempotentHint is True
         assert set(tools["move_footprint"].inputSchema["required"]) == {
             "reference", "x_mm", "y_mm",
@@ -154,8 +210,9 @@ async def test_read_only_server_hides_and_rejects_mutations():
     async with connected_session(read_only=True) as (bridge, session, _):
         names = {tool.name for tool in (await session.list_tools()).tools}
         assert names == READ_TOOLS
-        result = await session.call_tool("save_board", {})
-        assert result.isError
+        for name in WRITE_TOOLS:
+            result = await session.call_tool(name, {})
+            assert result.isError
         assert bridge.calls == []
         assert tool_data(await session.call_tool("get_board_info", {})) == {
             "method": "board_info", "arguments": {},
@@ -172,6 +229,13 @@ async def test_read_tools_reach_bridge_and_return_json():
             ("list_nets", "list_nets", {}),
             ("list_tracks", "list_tracks", {}),
             ("get_selection", "get_selection", {}),
+            ("list_pads", "list_pads", {"reference": "U1", "net_name": "GND"}),
+            ("list_vias", "list_vias", {"net_name": "GND"}),
+            ("list_zones", "list_zones", {}),
+            ("get_item_details", "get_item_details", {"item_ids": ["item-uuid"]}),
+            ("get_board_layers", "get_board_layers", {}),
+            ("get_board_stackup", "get_board_stackup", {}),
+            ("get_net_connections", "get_net_connections", {"net_name": "+3V3"}),
         ]
         for tool, method, arguments in calls:
             result = await session.call_tool(tool, arguments)
@@ -375,4 +439,58 @@ async def test_invalid_bom_argument_types_never_reach_bridge():
             ("update_bom_fields", {"references": ["R1"], "fields": {"MPN": 123}}),
         ]:
             assert (await session.call_tool(tool, args)).isError
+        assert bridge.calls == []
+
+
+@pytest.mark.anyio
+async def test_new_editing_and_artifact_tools_reach_bridge():
+    async with connected_session() as (bridge, session, _):
+        calls = [
+            ("set_selection", {"item_ids": ["track-uuid"], "mode": "add"}),
+            ("set_active_layer", {"layer": "B.Cu"}),
+            ("set_visible_layers", {"layers": ["B.Cu", "Edge.Cuts"]}),
+            ("add_via", {"x_mm": -2.5, "y_mm": 7.25, "diameter_mm": 0.8,
+                         "drill_mm": 0.4, "net_name": "GND"}),
+            ("delete_items", {"item_ids": ["track-uuid", "via-uuid"]}),
+            ("refill_zones", {}),
+            ("run_drc", {"severity": "warning"}),
+            ("export_fabrication", {"formats": ["gerbers", "drill", "svg"]}),
+        ]
+        for tool, arguments in calls:
+            assert tool_data(await session.call_tool(tool, arguments)) == {
+                "method": tool, "arguments": arguments,
+            }
+        assert bridge.calls == calls
+
+
+@pytest.mark.anyio
+async def test_new_tool_defaults_and_empty_selection():
+    async with connected_session() as (_, session, _):
+        cases = [
+            ("list_pads", {}, {"reference": None, "net_name": None}),
+            ("list_vias", {}, {"net_name": None}),
+            ("set_selection", {"item_ids": []}, {"item_ids": [], "mode": "replace"}),
+            ("add_via", {"x_mm": 1, "y_mm": 2}, {
+                "x_mm": 1, "y_mm": 2, "diameter_mm": 0.6,
+                "drill_mm": 0.3, "net_name": None,
+            }),
+            ("run_drc", {}, {"severity": "all"}),
+            ("export_fabrication", {}, {"formats": None}),
+        ]
+        for tool, arguments, expected in cases:
+            assert tool_data(await session.call_tool(tool, arguments))["arguments"] == expected
+
+
+@pytest.mark.anyio
+async def test_new_tools_reject_invalid_schemas_before_bridge_calls():
+    async with connected_session() as (bridge, session, _):
+        for tool, arguments in [
+            ("delete_items", {"item_ids": "all"}),
+            ("get_item_details", {}),
+            ("set_selection", {"item_ids": {"id": "item-uuid"}}),
+            ("get_net_connections", {}),
+            ("add_via", {"x_mm": "invalid", "y_mm": 1}),
+            ("export_fabrication", {"formats": "gerbers"}),
+        ]:
+            assert (await session.call_tool(tool, arguments)).isError
         assert bridge.calls == []

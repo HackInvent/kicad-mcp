@@ -36,10 +36,10 @@ from kipy.util.board_layer import (
 from kipy.util.units import from_mm, to_mm
 
 from kicad_mcp import bom
-
-
-class BridgeError(RuntimeError):
-    """An actionable error safe to expose to MCP clients."""
+from kicad_mcp.errors import BridgeError
+from kicad_mcp.inspection import InspectionMixin
+from kicad_mcp.editing import EditingMixin
+from kicad_mcp.fabrication import FabricationMixin
 
 
 def _finite(value: float, name: str) -> float:
@@ -107,7 +107,7 @@ def _text(item: BoardText) -> dict[str, Any]:
     }
 
 
-class KiCadBridge:
+class KiCadBridge(InspectionMixin, EditingMixin, FabricationMixin):
     """A bridge bound to one KiCad instance, with one IPC request at a time."""
 
     def __init__(
@@ -350,7 +350,8 @@ class KiCadBridge:
                 item.net = nets[0]
             with self._commit(board, "MCP: add track"):
                 created = board.create_items([item])
-                if len(created) != 1 or not isinstance(created[0], Track):
+                if (len(created) != 1 or not isinstance(created[0], Track)
+                        or not created[0].id.value):
                     raise BridgeError(
                         "KiCad did not confirm track creation; the edit was cancelled."
                     )
@@ -380,7 +381,8 @@ class KiCadBridge:
             item.attributes.mirrored = layer.startswith("B.")
             with self._commit(board, "MCP: add text"):
                 created = board.create_items([item])
-                if len(created) != 1 or not isinstance(created[0], BoardText):
+                if (len(created) != 1 or not isinstance(created[0], BoardText)
+                        or not created[0].id.value):
                     raise BridgeError(
                         "KiCad did not confirm text creation; the edit was cancelled."
                     )

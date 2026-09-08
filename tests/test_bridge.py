@@ -341,3 +341,24 @@ def test_old_kicad_is_reported_and_rejected(setup_bridge):
     with pytest.raises(BridgeError, match="10.0 or newer"):
         bridge.list_nets()
     client.get_board.assert_not_called()
+
+
+@pytest.mark.parametrize("method,args", [
+    ("add_track", (0, 0, 1, 1)),
+    ("add_text", ("example", 0, 0)),
+])
+def test_creation_without_assigned_uuid_rolls_back(setup_bridge, monkeypatch, method, args):
+    bridge, board, _, _ = setup_bridge
+    original_create = board.create_items
+
+    def missing_uuid(items):
+        created = original_create(items)
+        for item in created:
+            item.proto.id.value = ""
+        return created
+
+    monkeypatch.setattr(board, "create_items", missing_uuid)
+    with pytest.raises(BridgeError, match="did not confirm"):
+        getattr(bridge, method)(*args)
+    assert board.events == ["begin", "create", "drop"]
+    assert board.created == []

@@ -26,10 +26,14 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
         instructions=(
             "Operate on the PCB currently open in KiCad. Coordinates and sizes are in "
             "millimetres; angles are in degrees. Inspect the board before making changes. "
-            "Edits are undoable in KiCad and are not saved until save_board is called. "
+            "Object edits create undo steps and are not saved until save_board is called. "
             "Adding tracks does not perform routing or guarantee design-rule compliance. "
             "BOM tools use footprint data from the active PCB, not the schematic. "
-            "BOM exports return CSV content; they do not write files."
+            "BOM exports return CSV content; they do not write files. "
+            "Net membership does not prove physical connectivity. Zone refill is asynchronous; "
+            "inspect the editor before issuing dependent edits. DRC and fabrication use "
+            "kicad-cli on the last saved PCB and create local artifacts. Call save_board first "
+            "to include pending edits; neither tool implicitly saves the PCB or project."
         ),
         website_url="https://github.com/HackInvent/kicad-mcp",
         stateless_http=True,
@@ -44,6 +48,11 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
                            idempotentHint=True, openWorldHint=False)
     edit = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
                            idempotentHint=False, openWorldHint=False)
+
+    view = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                           idempotentHint=True, openWorldHint=False)
+    artifact = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                               idempotentHint=False, openWorldHint=False)
 
     async def invoke(method: str, **kwargs: Any) -> dict[str, Any]:
         # The IPC client is synchronous. Its own lock serializes board transactions.
@@ -97,7 +106,88 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
         return await invoke("export_bom", grouped=grouped, include_dnp=include_dnp,
                             include_excluded=include_excluded, fields=fields, delimiter=delimiter)
 
+    @server.tool(annotations=read)
+    async def list_pads(
+        reference: str | None = None, net_name: str | None = None,
+    ) -> dict[str, Any]:
+        """List pad UUIDs, footprint references, numbers, positions, nets and geometry; filters are exact."""
+        return await invoke("list_pads", reference=reference, net_name=net_name)
+
+    @server.tool(annotations=read)
+    async def list_vias(net_name: str | None = None) -> dict[str, Any]:
+        """Read via UUIDs, positions, diameters, drills, layer spans and nets; optionally filter by net."""
+        return await invoke("list_vias", net_name=net_name)
+
+    @server.tool(annotations=read)
+    async def list_zones() -> dict[str, Any]:
+        """Inspect zone UUIDs, names, nets, layers, priorities and fill state."""
+        return await invoke("list_zones")
+
+    @server.tool(annotations=read)
+    async def get_item_details(item_ids: list[str]) -> dict[str, Any]:
+        """Read supported PCB items by 1 to 500 unique UUIDs, with type-specific details in mm."""
+        return await invoke("get_item_details", item_ids=item_ids)
+
+    @server.tool(annotations=read)
+    async def get_board_layers() -> dict[str, Any]:
+        """Read enabled PCB layers, their canonical/display names, visibility and active layer."""
+        return await invoke("get_board_layers")
+
+    @server.tool(annotations=read)
+    async def get_board_stackup() -> dict[str, Any]:
+        """Read the ordered copper/dielectric stackup, thicknesses, materials and board finish settings."""
+        return await invoke("get_board_stackup")
+
+    @server.tool(annotations=read)
+    async def get_net_connections(net_name: str) -> dict[str, Any]:
+        """List pads, tracks and vias assigned to an exact net; this does not verify routed connectivity or DRC."""
+        return await invoke("get_net_connections", net_name=net_name)
+
     if not read_only:
+        @server.tool(annotations=view)
+        async def set_selection(item_ids: list[str], mode: str = "replace") -> dict[str, Any]:
+            """Replace, add to or remove from the editor selection using UUIDs; an empty replacement clears it."""
+            return await invoke("set_selection", item_ids=item_ids, mode=mode)
+
+        @server.tool(annotations=view)
+        async def set_active_layer(layer: str) -> dict[str, Any]:
+            """Activate an enabled PCB layer by canonical name, for example F.Cu or B.SilkS."""
+            return await invoke("set_active_layer", layer=layer)
+
+        @server.tool(annotations=view)
+        async def set_visible_layers(layers: list[str]) -> dict[str, Any]:
+            """Replace the visible PCB layer set with enabled canonical layer names."""
+            return await invoke("set_visible_layers", layers=layers)
+
+        @server.tool(annotations=edit)
+        async def add_via(
+            x_mm: float, y_mm: float, diameter_mm: float = 0.6,
+            drill_mm: float = 0.3, net_name: str | None = None,
+        ) -> dict[str, Any]:
+            """Add a through-hole via spanning F.Cu to B.Cu in one undo step; no autorouting, DRC or saving."""
+            return await invoke("add_via", x_mm=x_mm, y_mm=y_mm,
+                                diameter_mm=diameter_mm, drill_mm=drill_mm, net_name=net_name)
+
+        @server.tool(annotations=edit)
+        async def delete_items(item_ids: list[str]) -> dict[str, Any]:
+            """Delete supported unlocked top-level PCB items by 1 to 500 unique UUIDs in one undo step; reject footprint children and grouped items."""
+            return await invoke("delete_items", item_ids=item_ids)
+
+        @server.tool(annotations=edit)
+        async def refill_zones() -> dict[str, Any]:
+            """Request an asynchronous zone refill in the editor; the response does not confirm completion. Do not save."""
+            return await invoke("refill_zones")
+
+        @server.tool(annotations=artifact)
+        async def run_drc(severity: str = "all") -> dict[str, Any]:
+            """Run kicad-cli DRC on the last saved PCB and write a local JSON report; no schematic parity check. Severity: all, error, warning."""
+            return await invoke("run_drc", severity=severity)
+
+        @server.tool(annotations=artifact)
+        async def export_fabrication(formats: list[str] | None = None) -> dict[str, Any]:
+            """Export gerbers, drill, positions or svg from the last saved PCB using kicad-cli; default gerbers, drill and positions. No implicit save."""
+            return await invoke("export_fabrication", formats=formats)
+
         @server.tool(annotations=edit)
         async def update_bom_fields(
             references: list[str], fields: dict[str, str] | None = None,
