@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+This alpha release fixes issues found through source review and regression tests. Real KiCad GUI and CLI validation is still pending.
+
+- Preserve polygon arcs, holes, multiple zone contours and fills when moving or rotating footprints. Reject moves whose child geometry exceeds KiCad's coordinate range and reject update acknowledgments for another footprint UUID.
+- Calculate stackup thickness using every dielectric sublayer. Verify restoration of active and visible layers after failed editor changes, and report when restoration cannot be confirmed.
+- Keep relative library and drawing-sheet paths rooted in the original project when their later components contain variables or literal dollar signs. Reject recursive project variables, empty fabrication outputs and malformed DRC findings; improve file-permission and cleanup errors.
+- Verify that BOM update responses preserve footprint geometry and unrelated data before committing the transaction.
+- Prepare plugin updates before replacing the installed files, protect unrelated files reached through hard links, and retain the previous installation when a replacement fails. Remove stale Python caches during upgrades. Write PCM archives atomically so an interrupted build preserves the previous archive.
+- Reject implicit conversion of MCP booleans into coordinates and numbers/strings into assembly flags. Announce the plugin version instead of the MCP SDK version during initialization.
+- Ignore malformed session records safely, validate fixed HTTP tokens before startup, accept valid localhost Host headers without a port, and reject malformed hosts without a server exception. A repeated start cannot silently ignore a different read-only setting.
+
 ## 0.3.0
 
 This alpha release expands the server to 28 tools for PCB inspection, editing and manufacturing preparation. Validation in a real KiCad GUI and against an installed kicad-cli remains pending.

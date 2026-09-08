@@ -435,3 +435,19 @@ def test_busy_lookup_error_is_not_misreported_as_stale_ids(setup_inspection, mon
     with pytest.raises(ApiError) as error:
         resolve_items(board, [uid("via")])
     assert error.value is busy
+
+
+def test_stackup_sums_every_dielectric_sublayer(setup_inspection, monkeypatch):
+    bridge, board = setup_inspection
+    stackup = board.get_stackup()
+    dielectric = stackup.proto.layers[1]
+    # KiCad serializes only the first sublayer into the outer thickness field.
+    dielectric.thickness.value_nm = 530_000
+    dielectric.dielectric.layer[0].thickness.value_nm = 530_000
+    extra = dielectric.dielectric.layer.add()
+    extra.material_name = "Prepreg"
+    extra.thickness.value_nm = 1_000_000
+    monkeypatch.setattr(board, "get_stackup", lambda: stackup)
+    result = bridge.get_board_stackup()
+    assert result["layers"][1]["thickness_mm"] == pytest.approx(1.53)
+    assert result["total_thickness_mm"] == pytest.approx(1.6)

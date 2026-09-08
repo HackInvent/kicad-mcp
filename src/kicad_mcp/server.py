@@ -11,11 +11,14 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
+from pydantic import StrictBool, StrictFloat
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from . import __version__
 from .bridge import KiCadBridge
+from .http_security import valid_local_host, validate_http_token
 
 
 def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
@@ -40,10 +43,12 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
         json_response=True,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=["127.0.0.1:*", "localhost:*"],
+            allowed_hosts=["127.0.0.1", "localhost", "127.0.0.1:*", "localhost:*"],
             allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
         ),
     )
+    # FastMCP 1.x otherwise announces the SDK version as the application version.
+    server._mcp_server.version = __version__
     read = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
                            idempotentHint=True, openWorldHint=False)
     edit = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
@@ -90,7 +95,7 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
 
     @server.tool(annotations=read)
     async def get_bom(
-        grouped: bool = True, include_dnp: bool = False, include_excluded: bool = False,
+        grouped: StrictBool = True, include_dnp: StrictBool = False, include_excluded: StrictBool = False,
         fields: list[str] | None = None,
     ) -> dict[str, Any]:
         """Read the PCB bill of materials with quantities and custom fields; omit DNP/excluded parts by default."""
@@ -99,7 +104,7 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
 
     @server.tool(annotations=read)
     async def export_bom(
-        grouped: bool = True, include_dnp: bool = False, include_excluded: bool = False,
+        grouped: StrictBool = True, include_dnp: StrictBool = False, include_excluded: StrictBool = False,
         fields: list[str] | None = None, delimiter: str = ",",
     ) -> dict[str, Any]:
         """Return a spreadsheet-safe CSV BOM as text, without writing a file; delimiter may be comma, semicolon or tab."""
@@ -161,8 +166,8 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
 
         @server.tool(annotations=edit)
         async def add_via(
-            x_mm: float, y_mm: float, diameter_mm: float = 0.6,
-            drill_mm: float = 0.3, net_name: str | None = None,
+            x_mm: StrictFloat, y_mm: StrictFloat, diameter_mm: StrictFloat = 0.6,
+            drill_mm: StrictFloat = 0.3, net_name: str | None = None,
         ) -> dict[str, Any]:
             """Add a through-hole via spanning F.Cu to B.Cu in one undo step; no autorouting, DRC or saving."""
             return await invoke("add_via", x_mm=x_mm, y_mm=y_mm,
@@ -191,8 +196,8 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
         @server.tool(annotations=edit)
         async def update_bom_fields(
             references: list[str], fields: dict[str, str] | None = None,
-            value: str | None = None, dnp: bool | None = None,
-            exclude_from_bom: bool | None = None,
+            value: str | None = None, dnp: StrictBool | None = None,
+            exclude_from_bom: StrictBool | None = None,
         ) -> dict[str, Any]:
             """Update custom BOM fields, value or assembly flags on exact PCB references in one undo step; do not save or change the schematic."""
             return await invoke("update_bom_fields", references=references, fields=fields,
@@ -200,8 +205,8 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
 
         @server.tool(annotations=edit)
         async def move_footprint(
-            reference: str, x_mm: float, y_mm: float,
-            rotation_degrees: float | None = None,
+            reference: str, x_mm: StrictFloat, y_mm: StrictFloat,
+            rotation_degrees: StrictFloat | None = None,
         ) -> dict[str, Any]:
             """Move one unlocked component to absolute mm coordinates, with optional rotation; do not save."""
             return await invoke("move_footprint", reference=reference, x_mm=x_mm,
@@ -209,8 +214,8 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
 
         @server.tool(annotations=edit)
         async def add_track(
-            start_x_mm: float, start_y_mm: float, end_x_mm: float, end_y_mm: float,
-            width_mm: float = 0.25, layer: str = "F.Cu", net_name: str | None = None,
+            start_x_mm: StrictFloat, start_y_mm: StrictFloat, end_x_mm: StrictFloat, end_y_mm: StrictFloat,
+            width_mm: StrictFloat = 0.25, layer: str = "F.Cu", net_name: str | None = None,
         ) -> dict[str, Any]:
             """Add one straight copper track, optionally assigned to an existing net; no autorouting or DRC."""
             return await invoke("add_track", start_x_mm=start_x_mm, start_y_mm=start_y_mm,
@@ -219,8 +224,8 @@ def create_server(bridge: Any = None, *, read_only: bool = False) -> FastMCP:
 
         @server.tool(annotations=edit)
         async def add_text(
-            text: str, x_mm: float, y_mm: float, layer: str = "F.SilkS",
-            height_mm: float = 1.0,
+            text: str, x_mm: StrictFloat, y_mm: StrictFloat, layer: str = "F.SilkS",
+            height_mm: StrictFloat = 1.0,
         ) -> dict[str, Any]:
             """Add PCB text at absolute mm coordinates on the specified layer; do not save."""
             return await invoke("add_text", text=text, x_mm=x_mm, y_mm=y_mm,
@@ -240,8 +245,7 @@ def create_http_app(
     server: FastMCP, token: str, on_shutdown: Callable[[], None] | None = None,
 ):
     """Protect every route with a local bearer secret, including lifecycle routes."""
-    if not token:
-        raise ValueError("An HTTP bearer token is required")
+    validate_http_token(token)
 
     @server.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> JSONResponse:
@@ -259,16 +263,22 @@ def create_http_app(
     async def authenticate(request: Request, call_next):
         # Do not forward credentials from a browser origin, even on localhost.
         # Native MCP clients normally omit Origin entirely.
-        if request.headers.get("origin"):
+        if "origin" in request.headers:
             return JSONResponse({"error": "Browser origins are not accepted"}, status_code=403)
-        host = request.url.hostname
-        if host not in {"127.0.0.1", "localhost"}:
+        host = request.headers.get("host", "")
+        if not valid_local_host(host):
             return JSONResponse({"error": "Invalid host"}, status_code=421)
         supplied = request.headers.get("authorization", "")
         expected = "Bearer " + token
         if not hmac.compare_digest(supplied.encode(), expected.encode()):
             return JSONResponse({"error": "A valid bearer token is required"}, status_code=401,
                                 headers={"WWW-Authenticate": 'Bearer realm="kicad-mcp"'})
+        # Host names are case-insensitive; normalize before the SDK's exact
+        # string allowlist check on the inner MCP transport.
+        request.scope["headers"] = [
+            (name, value.lower() if name == b"host" else value)
+            for name, value in request.scope["headers"]
+        ]
         return await call_next(request)
 
     app.add_middleware(BaseHTTPMiddleware, dispatch=authenticate)

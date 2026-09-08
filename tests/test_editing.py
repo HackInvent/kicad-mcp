@@ -483,3 +483,28 @@ def test_read_only_blocks_all_editor_changes_before_ipc(board, method, arguments
         getattr(bridge, method)(*arguments)
     assert bridge.board_reads == 0
     assert board.events == []
+
+
+@pytest.mark.parametrize(
+    "method, argument, setter, attribute",
+    [
+        ("set_active_layer", "B.Cu", "set_active_layer", "active"),
+        ("set_visible_layers", ["F.SilkS"], "set_visible_layers", "visible"),
+    ],
+)
+def test_layer_change_reports_failed_restoration(
+    board, monkeypatch, method, argument, setter, attribute
+):
+    attempts = []
+
+    def fail_and_ignore_restore(requested):
+        attempts.append(requested)
+        if len(attempts) == 1:
+            setattr(board, attribute, requested)
+            raise RuntimeError("IPC reply lost after applying layer change")
+        # A successful setter reply alone does not prove the old state was restored.
+
+    monkeypatch.setattr(board, setter, fail_and_ignore_restore)
+    with pytest.raises(BridgeError, match="previous state could not be restored"):
+        getattr(Harness(board), method)(argument)
+    assert len(attempts) == 2

@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 import zipfile
 
 
@@ -85,14 +87,29 @@ def build(output: Path | None = None, root: Path = ROOT) -> Path:
     destination = output or root / "dist" / f"hackinvent-kicad-mcp-{version}.zip"
     payload = {f"plugins/{name}": data for name, data in plugin_files(root).items()}
     payload["metadata.json"] = (json.dumps(package_metadata(version), indent=2) + "\n").encode()
+    resolved = destination.resolve()
+    if (
+        resolved in {(root / "pyproject.toml").resolve(), (root / "LICENSE").resolve()}
+        or resolved.is_relative_to((root / "src").resolve())
+        or resolved.is_relative_to((root / "plugin").resolve())
+    ):
+        raise ValueError("The archive destination must not overwrite the checkout's sources")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, data in sorted(payload.items()):
-            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.create_system = 3
-            info.external_attr = 0o100644 << 16
-            archive.writestr(info, data)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        # An interrupted build must preserve the last complete archive. Replacing
+        # the directory entry also avoids modifying a hard-linked output target.
+        with os.fdopen(descriptor, "wb") as stream:
+            with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, data in sorted(payload.items()):
+                    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.create_system = 3
+                    info.external_attr = 0o100644 << 16
+                    archive.writestr(info, data)
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     return destination
 
 

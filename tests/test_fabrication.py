@@ -411,3 +411,134 @@ def test_cli_symlink_artifacts_are_rejected_without_touching_external_files(envi
         export(environment, formats=["svg"])
     assert outside.read_text() == "outside data"
     assert list(environment.artifacts.iterdir()) == []
+
+
+@pytest.mark.parametrize("uri", ["libs/${VENDOR}/Parts.pretty", "templates/$(STYLE).kicad_wks", "libs/rev$2.pretty"])
+def test_relative_paths_with_unknown_variable_suffix_still_use_original_project(tmp_path, uri):
+    assert fabrication._rebase_project_path(uri, tmp_path, {}) == str(tmp_path / uri)
+
+
+def test_self_referential_saved_variable_is_rejected():
+    with pytest.raises(BridgeError, match="recursive"):
+        fabrication._expand_saved_variables("${LIBS}/Parts.pretty", {"LIBS": "${LIBS}"})
+
+
+def test_empty_cli_export_is_rejected_and_bundle_removed(environment, monkeypatch):
+    runner = environment.cli
+
+    def empty_output(command, **kwargs):
+        result = runner(command, **kwargs)
+        if command[1:4] == ["pcb", "export", "svg"]:
+            Path(command[command.index("--output") + 1]).write_bytes(b"")
+        return result
+
+    monkeypatch.setattr(fabrication.subprocess, "run", empty_output)
+    with pytest.raises(BridgeError, match="empty"):
+        export(environment, formats=["svg"])
+    assert list(environment.artifacts.iterdir()) == []
+
+
+def test_drc_exclusion_must_be_boolean_to_avoid_hiding_errors(environment):
+    environment.cli.report["violations"][0]["excluded"] = "false"
+    with pytest.raises(BridgeError, match="invalid DRC JSON"):
+        run_drc(environment)
+
+
+def test_unwritable_artifact_directory_gives_filesystem_guidance(environment, monkeypatch):
+    original_mkdir = Path.mkdir
+
+    def denied_mkdir(path, *args, **kwargs):
+        if path == environment.artifacts:
+            raise PermissionError("private filesystem path")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", denied_mkdir)
+    with pytest.raises(BridgeError, match="artifact directory") as error:
+        export(environment, formats=["svg"])
+    assert "private filesystem path" not in str(error.value)
+
+
+def test_unreadable_source_file_gives_filesystem_guidance(environment, monkeypatch):
+    original_read = Path.read_bytes
+
+    def denied_read(path):
+        if path == environment.project / "board.kicad_pcb":
+            raise PermissionError("private source path")
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", denied_read)
+    with pytest.raises(BridgeError, match="read.*saved") as error:
+        run_drc(environment)
+    assert "private source path" not in str(error.value)
+    assert list(environment.artifacts.iterdir()) == []
+
+
+@pytest.mark.parametrize("uri,expected", [
+    ("libs/${VENDOR}/Parts.pretty", "C:/Projects/carte é/libs/${VENDOR}/Parts.pretty"),
+    ("D:/Shared/Parts.pretty", "D:/Shared/Parts.pretty"),
+    (r"\\server\parts\Parts.pretty", r"\\server\parts\Parts.pretty"),
+    ("${KICAD10_FOOTPRINT_DIR}/Parts.pretty", "${KICAD10_FOOTPRINT_DIR}/Parts.pretty"),
+    ("https://example.test/Parts.pretty", "https://example.test/Parts.pretty"),
+])
+def test_path_rebasing_preserves_windows_drives_unc_and_global_paths(uri, expected):
+    from pathlib import PureWindowsPath
+
+    project = PureWindowsPath("C:/Projects/carte é")
+    result = fabrication._rebase_project_path(uri, project, {})
+    if expected.startswith("C:"):
+        assert result == str(PureWindowsPath(expected))
+    else:
+        assert result == expected
+
+
+def test_windows_drive_relative_path_is_rejected_as_ambiguous():
+    from pathlib import PureWindowsPath
+
+    with pytest.raises(BridgeError, match="relative to a Windows drive"):
+        fabrication._rebase_project_path("D:Parts.pretty", PureWindowsPath("C:/Project"), {})
+
+
+def test_snapshot_preserves_unicode_and_escaped_project_paths(environment, tmp_path):
+    import re
+
+    name = 'carte électronique "révision 2"' if os.name != "nt" else "carte électronique révision 2"
+    moved = environment.project.with_name(name)
+    environment.project.rename(moved)
+    environment.board.get_project.return_value.path = str(moved)
+    source = moved / "board.kicad_pcb"
+    source.write_text('(kicad_pcb (property "Path" "${KIPRJMOD}/méca"))\n', encoding="utf-8")
+    original_files = {p.name: p.read_bytes() for p in moved.iterdir()}
+    destination = tmp_path / "snapshot-check"
+    destination.mkdir()
+    with fabrication._snapshot(environment.board, destination, require_project=True) as snapshot:
+        content = snapshot["path"].read_text(encoding="utf-8")
+        match = re.search(r'\(property "Path" ("(?:\\.|[^"\\])*")\)', content)
+        assert match is not None
+        assert json.loads(match[1]) == str(moved) + "/méca"
+        settings = json.loads(snapshot["path"].with_suffix(".kicad_pro").read_text())
+        assert settings["text_variables"]["LIBS"] == str(moved) + "/footprints"
+    assert not list(destination.iterdir())
+    assert {p.name: p.read_bytes() for p in moved.iterdir()} == original_files
+
+
+@pytest.mark.parametrize("severity", [None, "", 1])
+def test_malformed_violation_severity_is_rejected(environment, severity):
+    environment.cli.report["violations"][0]["severity"] = severity
+    with pytest.raises(BridgeError, match="invalid DRC JSON"):
+        run_drc(environment)
+
+
+def test_failed_cleanup_reports_the_remaining_artifact_directory_issue(environment, monkeypatch):
+    original_rmtree = fabrication.shutil.rmtree
+
+    def denied_cleanup(path, *args, **kwargs):
+        if Path(path).parent == environment.artifacts:
+            raise PermissionError("private cleanup path")
+        return original_rmtree(path, *args, **kwargs)
+
+    environment.cli.exit_code = 3
+    monkeypatch.setattr(fabrication.shutil, "rmtree", denied_cleanup)
+    with pytest.raises(BridgeError, match="temporary files could not be removed") as error:
+        run_drc(environment)
+    assert "private cleanup path" not in str(error.value)
+    assert len(list(environment.artifacts.iterdir())) == 1

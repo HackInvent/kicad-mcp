@@ -10,10 +10,12 @@ from __future__ import annotations
 from collections import Counter
 import csv
 from io import StringIO
+import json
 import re
 from typing import Any, Sequence
 from uuid import uuid4
 
+from google.protobuf.json_format import MessageToDict
 from kipy.board_types import BoardText, Field, FootprintInstance
 
 
@@ -350,6 +352,51 @@ def prepare_updates(
     return updated
 
 
+def _without_empty_messages(value):
+    if isinstance(value, dict):
+        return {
+            key: normalized for key, child in value.items()
+            if (normalized := _without_empty_messages(child)) != {}
+        }
+    if isinstance(value, list):
+        return [_without_empty_messages(child) for child in value]
+    return value
+
+
+def _field_state(field: Field) -> dict:
+    state = MessageToDict(
+        field.proto, preserving_proto_field_name=True, use_integers_for_enums=True
+    )
+    # A newly added field may acquire explicitly present default messages from
+    # KiCad. Its multiline flag is derived from the new text, not a style edit.
+    attributes = state.get("text", {}).get("text", {}).get("attributes", {})
+    attributes.pop("multiline", None)
+    return _without_empty_messages(state)
+
+
+def _footprint_state(item: FootprintInstance) -> str:
+    """Compare known geometry/metadata while tolerating neutral IPC normalization.
+
+    Child order is not significant. Unknown fields from a newer KiCad are not
+    interpreted by this SDK, and new fields may gain present default messages.
+    UUIDs, pads, 3D models, field appearance and other known metadata are checked.
+    """
+    state = MessageToDict(
+        item.proto, preserving_proto_field_name=True, use_integers_for_enums=True
+    )
+    definition = state.setdefault("definition", {})
+    children = []
+    for child in item.definition.items:
+        data = _field_state(child) if isinstance(child, Field) else MessageToDict(
+            child.proto, preserving_proto_field_name=True, use_integers_for_enums=True
+        )
+        children.append({"type": child.proto.DESCRIPTOR.full_name, "data": data})
+    definition["items"] = sorted(children, key=lambda child: json.dumps(child, sort_keys=True))
+    for name in ("reference_field", "value_field", "datasheet_field", "description_field"):
+        state[name] = _field_state(getattr(item, name))
+    return json.dumps(state, sort_keys=True, ensure_ascii=False)
+
+
 def verify_updates(
     expected: Sequence[FootprintInstance], returned: Sequence[FootprintInstance]
 ) -> None:
@@ -364,3 +411,8 @@ def verify_updates(
     actual = {item.id.value: component(item) for item in returned}
     if any(actual[item.id.value] != component(item) for item in expected):
         raise BOMError("KiCad did not apply all requested BOM values; the BOM edit was cancelled.")
+    confirmed = {item.id.value: item for item in returned}
+    if any(_footprint_state(confirmed[item.id.value]) != _footprint_state(item) for item in expected):
+        raise BOMError(
+            "KiCad changed footprint geometry or metadata unexpectedly; the BOM edit was cancelled."
+        )

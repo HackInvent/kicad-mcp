@@ -107,6 +107,59 @@ def _text(item: BoardText) -> dict[str, Any]:
     }
 
 
+def _is_polygon_child(item) -> bool:
+    return isinstance(item, Zone) or (
+        isinstance(item, BoardShape) and item.proto.shape.WhichOneof("geometry") == "polygon"
+    )
+
+
+def _transform_polygon_child(item, delta: Vector2, angle: Angle, center: Vector2) -> None:
+    """Transform every contour, including arcs whose kipy getters return copies."""
+    if isinstance(item, Zone):
+        polygons = list(item.proto.outline.polygons)
+        for fill in item.proto.filled_polygons:
+            polygons.extend(fill.shapes.polygons)
+    else:
+        polygons = item.proto.shape.polygon.polygons
+    for polygon in polygons:
+        for line in [polygon.outline, *polygon.holes]:
+            for node in line.nodes:
+                if node.HasField("point"):
+                    points = [node.point]
+                elif node.HasField("arc"):
+                    points = [node.arc.start, node.arc.mid, node.arc.end]
+                else:
+                    continue
+                for point in points:
+                    position = (Vector2(point) + delta).rotate(angle, center)
+                    point.CopyFrom(position.proto)
+
+
+def _validate_footprint_coordinates(item: FootprintInstance) -> None:
+    """Prevent KiCad's int64 IPC coordinates from wrapping when read into int32 geometry."""
+
+    def validate(message):
+        if message.DESCRIPTOR.full_name == "kiapi.common.types.Vector2":
+            if any(value < -(2**31) or value > 2**31 - 1 for value in (message.x_nm, message.y_nm)):
+                raise BridgeError(
+                    "The move would place footprint geometry outside KiCad's coordinate range. "
+                    "Choose a position closer to the board origin."
+                )
+            return
+        for descriptor, value in message.ListFields():
+            if descriptor.message_type is not None:
+                if descriptor.label == descriptor.LABEL_REPEATED:
+                    for child in value:
+                        validate(child)
+                else:
+                    validate(value)
+
+    validate(item.proto)
+    # Definition children are packed in Any messages; inspect their real wrappers.
+    for child in item.definition.items:
+        validate(child.proto)
+
+
 class KiCadBridge(InspectionMixin, EditingMixin, FabricationMixin):
     """A bridge bound to one KiCad instance, with one IPC request at a time."""
 
@@ -299,18 +352,39 @@ class KiCadBridge(InspectionMixin, EditingMixin, FabricationMixin):
                     "This footprint contains child items that kicad-python cannot safely transform. "
                     "Move it in KiCad instead."
                 )
-            item.position = Vector2.from_xy_mm(x_mm, y_mm)
+            # kipy 0.7 drops 3D models during rotation, changes only the first
+            # zone outline, and mutates detached copies of polygon arc nodes.
+            # Keep those children aside and transform their complete geometry here.
+            polygons = [child for child in children if _is_polygon_child(child)]
+            item.definition.items = [
+                child
+                for child in children
+                if not isinstance(child, Footprint3DModel) and not _is_polygon_child(child)
+            ]
+            position = Vector2.from_xy_mm(x_mm, y_mm)
+            delta = position - item.position
+            previous_angle = item.orientation.degrees
+            item.position = position
             if rotation is not None:
                 item.orientation = Angle.from_degrees(rotation)
-                # kipy 0.7 omits non-geometric children in the orientation setter.
-                # Restore 3D models, whose coordinates are local to the footprint.
-                transformed = iter(item.definition.items)
-                item.definition.items = [
-                    next(transformed) if isinstance(child, movable) else child for child in children
-                ]
+            angle = Angle.from_degrees(item.orientation.degrees - previous_angle)
+            for child in polygons:
+                _transform_polygon_child(child, delta, angle, position)
+            transformed = iter(item.definition.items)
+            item.definition.items = [
+                child
+                if isinstance(child, Footprint3DModel) or _is_polygon_child(child)
+                else next(transformed)
+                for child in children
+            ]
+            _validate_footprint_coordinates(item)
             with self._commit(board, f"MCP: move {reference}"):
                 updated = board.update_items([item])
-                if len(updated) != 1 or not isinstance(updated[0], FootprintInstance):
+                if (
+                    len(updated) != 1
+                    or not isinstance(updated[0], FootprintInstance)
+                    or updated[0].id.value != item.id.value
+                ):
                     raise BridgeError(
                         "KiCad did not confirm the footprint update; the edit was cancelled."
                     )
@@ -350,8 +424,11 @@ class KiCadBridge(InspectionMixin, EditingMixin, FabricationMixin):
                 item.net = nets[0]
             with self._commit(board, "MCP: add track"):
                 created = board.create_items([item])
-                if (len(created) != 1 or not isinstance(created[0], Track)
-                        or not created[0].id.value):
+                if (
+                    len(created) != 1
+                    or not isinstance(created[0], Track)
+                    or not created[0].id.value
+                ):
                     raise BridgeError(
                         "KiCad did not confirm track creation; the edit was cancelled."
                     )
@@ -381,8 +458,11 @@ class KiCadBridge(InspectionMixin, EditingMixin, FabricationMixin):
             item.attributes.mirrored = layer.startswith("B.")
             with self._commit(board, "MCP: add text"):
                 created = board.create_items([item])
-                if (len(created) != 1 or not isinstance(created[0], BoardText)
-                        or not created[0].id.value):
+                if (
+                    len(created) != 1
+                    or not isinstance(created[0], BoardText)
+                    or not created[0].id.value
+                ):
                     raise BridgeError(
                         "KiCad did not confirm text creation; the edit was cancelled."
                     )

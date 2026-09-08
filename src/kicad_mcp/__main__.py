@@ -16,6 +16,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from . import __version__
+from .http_security import validate_http_token
 
 
 def state_directory() -> Path:
@@ -49,6 +50,9 @@ def write_session(path: Path, data: dict) -> None:
 
 def request_session(data: dict, route: str, method: str = "GET") -> dict:
     """Contact only a validated local endpoint, without proxies or redirects."""
+    if not isinstance(data, dict) or not isinstance(data.get("url"), str):
+        raise ValueError("Invalid local server URL in session file")
+    validate_http_token(data.get("token"))
     url = urlsplit(data["url"])
     if (url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port
             or url.username or url.password or url.path != "/mcp" or url.query or url.fragment):
@@ -60,7 +64,10 @@ def request_session(data: dict, route: str, method: str = "GET") -> dict:
         payload = response.read(65536)
         if response.status != 200:
             raise ValueError(f"Local server returned HTTP {response.status}")
-        return json.loads(payload)
+        decoded = json.loads(payload)
+        if not isinstance(decoded, dict):
+            raise ValueError("Invalid local server response; expected a JSON object")
+        return decoded
     finally:
         connection.close()
 
@@ -72,7 +79,8 @@ def active_sessions(directory: Path, socket_path: str | None = None) -> list[tup
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             health = request_session(data, "/health")
-            if health.get("name") == "hackinvent-kicad-mcp" and health.get("status") == "running":
+            if (isinstance(health, dict) and health.get("name") == "hackinvent-kicad-mcp"
+                    and health.get("status") == "running"):
                 sessions.append((path, data))
         except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
             # Stale records are ignored, never used to signal a potentially reused PID.
@@ -117,6 +125,11 @@ def serve_http(args: argparse.Namespace, bridge) -> int:
     path = session_path(args.state_dir, args.socket)
     for existing_path, data in active_sessions(args.state_dir, args.socket):
         if existing_path == path:
+            if data.get("read_only") is not args.read_only:
+                raise ValueError(
+                    "The running server uses a different read-only setting. "
+                    "Stop it with kicad-mcp stop, then restart with the intended setting."
+                )
             print(f"KiCad MCP is already running at {data['url']}", file=sys.stderr)
             return 0
     with session_lock(path):
@@ -132,9 +145,16 @@ def _serve_http_locked(args: argparse.Namespace, bridge) -> int:
     path = session_path(directory, args.socket)
     for existing_path, data in active_sessions(directory, args.socket):
         if existing_path == path:
+            if data.get("read_only") is not args.read_only:
+                raise ValueError(
+                    "The running server uses a different read-only setting. "
+                    "Stop it with kicad-mcp stop, then restart with the intended setting."
+                )
             print(f"KiCad MCP is already running at {data['url']}", file=sys.stderr)
             return 0
 
+    token = os.environ.get("KICAD_MCP_TOKEN") or secrets.token_urlsafe(32)
+    validate_http_token(token)
     # Bind before writing any state; a second click cannot replace the active token.
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if sys.platform == "win32":
@@ -148,7 +168,6 @@ def _serve_http_locked(args: argparse.Namespace, bridge) -> int:
         listener.close()
         raise ValueError(f"Cannot listen on 127.0.0.1:{args.port}; choose another KICAD_MCP_PORT") from None
 
-    token = os.environ.get("KICAD_MCP_TOKEN") or secrets.token_urlsafe(32)
     port = listener.getsockname()[1]
     data = {"url": f"http://127.0.0.1:{port}/mcp", "token": token,
             "pid": os.getpid(), "socket": args.socket, "read_only": args.read_only,
@@ -172,7 +191,7 @@ def _serve_http_locked(args: argparse.Namespace, bridge) -> int:
         listener.close()
         try:
             current = json.loads(path.read_text(encoding="utf-8"))
-            if current.get("token") == token:
+            if isinstance(current, dict) and current.get("token") == token:
                 path.unlink()
         except (OSError, ValueError):
             pass

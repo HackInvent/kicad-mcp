@@ -10,6 +10,7 @@ import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from kicad_mcp import __version__
 from kicad_mcp.bridge import BridgeError
 from kicad_mcp.server import create_http_app, create_server
 
@@ -186,6 +187,7 @@ def tool_data(result):
 async def test_initialization_tool_discovery_and_safety_annotations():
     async with connected_session() as (bridge, session, initialized):
         assert initialized.serverInfo.name == "hackinvent-kicad-mcp"
+        assert initialized.serverInfo.version == __version__
         assert initialized.capabilities.tools is not None
         tools = {tool.name: tool for tool in (await session.list_tools()).tools}
         assert set(tools) == READ_TOOLS | WRITE_TOOLS
@@ -352,11 +354,12 @@ async def test_shutdown_unavailable_without_callback():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("path", ["/health", "/mcp", "/shutdown"])
-async def test_hostile_browser_origin_is_rejected_even_with_token(path):
+@pytest.mark.parametrize("origin", ["https://attacker.example", ""])
+async def test_hostile_browser_origin_is_rejected_even_with_token(path, origin):
     shutdown_calls = []
     async with running_app(on_shutdown=lambda: shutdown_calls.append(True)) as (bridge, client):
         response = await client.post(path, headers={
-            "Authorization": f"Bearer {TOKEN}", "Origin": "https://attacker.example",
+            "Authorization": f"Bearer {TOKEN}", "Origin": origin,
         })
         assert response.status_code == 403
         assert shutdown_calls == []
@@ -493,4 +496,49 @@ async def test_new_tools_reject_invalid_schemas_before_bridge_calls():
             ("export_fabrication", {"formats": "gerbers"}),
         ]:
             assert (await session.call_tool(tool, arguments)).isError
+        assert bridge.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "LOCALHOST"])
+async def test_mcp_accepts_localhost_host_header_without_explicit_port(host):
+    async with running_app() as (_, client):
+        client.headers["Authorization"] = f"Bearer {TOKEN}"
+        client.headers["Host"] = host
+        async with streamable_http_client(f"{BASE_URL}/mcp", http_client=client) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                assert len((await session.list_tools()).tools) == 28
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("host", [
+    "[invalid", "user@127.0.0.1:8765", "127.0.0.1:not-a-port", "localhost:65536",
+])
+async def test_malformed_host_is_rejected_without_server_error(host):
+    async with running_app() as (_, client):
+        response = await client.get("/health", headers={
+            "Authorization": f"Bearer {TOKEN}", "Host": host,
+        })
+        assert response.status_code == 421
+
+
+@pytest.mark.parametrize("token", ["secret-\n-newline", "secret-\u00e9-nonascii", " padded "])
+def test_http_token_must_be_usable_in_an_authorization_header(token):
+    with pytest.raises(ValueError, match="ASCII") as error:
+        create_http_app(create_server(FakeBridge()), token)
+    assert token not in str(error.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("tool,arguments", [
+    ("move_footprint", {"reference": "U1", "x_mm": True, "y_mm": 2}),
+    ("add_via", {"x_mm": 1, "y_mm": 2, "drill_mm": False}),
+    ("update_bom_fields", {"references": ["R1"], "dnp": 1}),
+    ("update_bom_fields", {"references": ["R1"], "exclude_from_bom": "false"}),
+])
+async def test_mcp_does_not_coerce_boolean_and_numeric_edit_arguments(tool, arguments):
+    async with connected_session() as (bridge, session, _):
+        result = await session.call_tool(tool, arguments)
+        assert result.isError
         assert bridge.calls == []

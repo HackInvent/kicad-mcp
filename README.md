@@ -6,7 +6,7 @@ A **KiCad 10+** plugin that starts a [Model Context Protocol](https://modelconte
 
 The plugin uses KiCad’s official IPC API and the `kicad-python` library, without `pcbnew`/SWIG bindings. It provides two actions: **Start MCP server** and **Stop MCP server**. A **stdio** mode also lets an MCP client launch the server directly.
 
-**Version 0.3.0, alpha.** The MCP protocol, server lifecycle and operations are covered by automated tests. The KiCad tests use real `kicad-python` objects with a simulated editor; validation in a real KiCad interface is still pending. This project targets the PCB editor and requires a running GUI instance.
+**Version 0.3.1, alpha.** The MCP protocol, server lifecycle and operations are covered by automated tests. The KiCad tests use real `kicad-python` objects with a simulated editor; validation in a real KiCad interface is still pending. This project targets the PCB editor and requires a running GUI instance.
 
 ## Available tools
 
@@ -43,7 +43,7 @@ The plugin uses KiCad’s official IPC API and the `kicad-python` library, witho
 
 There are **28 tools: 15 read tools and 13 tools that change the editor, save the PCB or create artifacts**. BOM export reads the PCB and returns text; it does not write a file.
 
-Distances are in **millimetres**, positions are absolute and angles are in **degrees**. Object creation, movement, deletion and BOM updates create an undo step in KiCad. Selection and layer visibility change the editor view. Zone refill is a separate asynchronous KiCad action. These operations never trigger an automatic save. `save_board` also saves any other unsaved changes currently in the editor.
+Distances are in **millimetres**, positions are absolute and angles are in **degrees**. MCP numeric arguments must be JSON numbers and flags must be JSON booleans; implicit conversion between these types is rejected. Object creation, movement, deletion and BOM updates create an undo step in KiCad. Selection and layer visibility change the editor view. Zone refill is a separate asynchronous KiCad action. These operations never trigger an automatic save. `save_board` also saves any other unsaved changes currently in the editor.
 
 `add_track` creates a segment and `add_via` creates a through-hole via; neither performs autorouting or design-rule checks. Locked components and ambiguous references are rejected. Footprints containing items that `kicad-python` cannot safely transform are also rejected; pads, standard geometry and 3D models are supported.
 
@@ -171,7 +171,7 @@ Requirements: KiCad 10.0 or later, Python 3.10+ with `venv`/`pip` support, and n
 
 ### Using the Plugin and Content Manager
 
-1. Download `hackinvent-kicad-mcp-0.3.0.zip` from the [releases page](https://github.com/HackInvent/kicad-mcp/releases).
+1. Download `hackinvent-kicad-mcp-0.3.1.zip` from the [releases page](https://github.com/HackInvent/kicad-mcp/releases).
 2. In the KiCad project manager, open **Plugin and Content Manager**, choose **Install from File** and select the ZIP.
 3. Enable the KiCad API in the plugin preferences, then open a PCB and reload the plugins or restart the editor.
 4. Wait for the plugin’s Python environment to be created, then run **Start MCP server**.
@@ -220,7 +220,7 @@ Header    : Authorization: Bearer <value of the token field>
 
 The configuration format depends on your client. It must support setting this HTTP header. Authentication uses a shared local token, without an OAuth server; clients that require OAuth cannot use this mode directly. Browser clients that send an `Origin` header are rejected; use a native MCP client or stdio mode.
 
-The token changes on each startup unless `KICAD_MCP_TOKEN` is set. It is separate from KiCad’s internal IPC token. Do not include either token in issues or commits.
+The token changes on each startup unless `KICAD_MCP_TOKEN` is set. A fixed token must contain visible ASCII characters without whitespace; invalid values are rejected before the server starts. It is separate from KiCad’s internal IPC token. Do not include either token in issues or commits.
 
 Without a copy of the repository, you can also find the connection settings in a session JSON file:
 
@@ -267,7 +267,7 @@ kicad-mcp status --show-token
 kicad-mcp stop
 ```
 
-`--read-only` exposes only the 15 inspection/BOM read tools and also blocks the other operations in the KiCad adapter. Selection, layer changes, DRC reports and fabrication exports are disabled because they change editor state or create files. `export_bom` remains available because it returns CSV text without creating a file. `status` hides the token by default. When multiple servers are running, use `stop --socket /path/to/socket` to select the instance to stop.
+`--read-only` exposes only the 15 inspection/BOM read tools and also blocks the other operations in the KiCad adapter. Selection, layer changes, DRC reports and fabrication exports are disabled because they change editor state or create files. `export_bom` remains available because it returns CSV text without creating a file. An already running server cannot change its read-only setting through a second start command: stop it first, then restart with the intended setting. `status` hides the token by default. When multiple servers are running, use `stop --socket /path/to/socket` to select the instance to stop.
 
 ### Configure startup from KiCad
 

@@ -175,3 +175,199 @@ def test_installer_rejects_version_path_traversal(tmp_path):
     result = run_script("install_plugin.py", "--version", "../other", env=env)
     assert result.returncode != 0
     assert not list(tmp_path.iterdir())
+
+
+@pytest.fixture
+def packaging_modules(monkeypatch):
+    import importlib
+
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    return importlib.import_module("build_plugin"), importlib.import_module("install_plugin")
+
+
+def test_installer_does_not_modify_external_hard_link_target(tmp_path, packaging_modules):
+    _, installer = packaging_modules
+    destination = installer.install(tmp_path / "installed")
+    external = tmp_path / "unrelated.txt"
+    external.write_text("unrelated document")
+    (destination / "start.py").unlink()
+    os.link(external, destination / "start.py")
+    installer.install(destination, overwrite=True)
+    assert external.read_text() == "unrelated document"
+    assert (destination / "start.py").read_bytes() == (ROOT / "plugin" / "start.py").read_bytes()
+    assert not os.path.samefile(external, destination / "start.py")
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_installer_write_failure_keeps_previous_installation_intact(
+    tmp_path, monkeypatch, packaging_modules, existing,
+):
+    _, installer = packaging_modules
+    destination = tmp_path / "installed"
+    if existing:
+        installer.install(destination)
+        (destination / "start.py").write_text("old start script")
+        (destination / "notes.txt").write_text("user notes")
+        previous = {
+            str(path.relative_to(destination)): path.read_bytes()
+            for path in destination.rglob("*") if path.is_file()
+        }
+    original_write = Path.write_bytes
+
+    def fail_after_first_payload_files(path, data):
+        if path.name == "stop.py":
+            raise OSError("simulated full disk")
+        return original_write(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_after_first_payload_files)
+    with pytest.raises(OSError, match="full disk"):
+        installer.install(destination, overwrite=existing)
+    if existing:
+        assert {
+            str(path.relative_to(destination)): path.read_bytes()
+            for path in destination.rglob("*") if path.is_file()
+        } == previous
+    else:
+        assert not destination.exists()
+    assert not list(tmp_path.glob(".*.install-*"))
+
+
+def test_installer_activation_failure_restores_previous_directory(
+    tmp_path, monkeypatch, packaging_modules,
+):
+    _, installer = packaging_modules
+    destination = installer.install(tmp_path / "installed")
+    (destination / "start.py").write_text("old start script")
+    original_replace = os.replace
+
+    def fail_activation(source, target):
+        if Path(source).name == "prepared":
+            raise OSError("simulated activation failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(installer.os, "replace", fail_activation)
+    with pytest.raises(OSError, match="activation failure"):
+        installer.install(destination, overwrite=True)
+    assert (destination / "start.py").read_text() == "old start script"
+    assert not list(tmp_path.glob(".*.install-*"))
+
+
+def test_installer_preserves_recovery_copy_if_activation_and_restore_fail(
+    tmp_path, monkeypatch, packaging_modules,
+):
+    _, installer = packaging_modules
+    destination = installer.install(tmp_path / "installed")
+    (destination / "start.py").write_text("old start script")
+    original_replace = os.replace
+
+    def fail_activation_and_restoration(source, target):
+        if Path(source).name in {"prepared", "previous"}:
+            raise OSError("simulated directory failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(installer.os, "replace", fail_activation_and_restoration)
+    with pytest.raises(OSError, match="files are preserved at") as error:
+        installer.install(destination, overwrite=True)
+    backups = list(tmp_path.glob(".*.install-*/previous"))
+    assert len(backups) == 1
+    assert (backups[0] / "start.py").read_text() == "old start script"
+    assert str(backups[0]) in str(error.value)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows symlink permissions vary")
+def test_installer_keeps_unrelated_symlinks_without_copying_their_targets(
+    tmp_path, packaging_modules,
+):
+    _, installer = packaging_modules
+    destination = installer.install(tmp_path / "installed")
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "notes.txt").write_text("personal notes")
+    (destination / "notes").symlink_to(external, target_is_directory=True)
+    installer.install(destination, overwrite=True)
+    assert (destination / "notes").is_symlink()
+    assert (destination / "notes" / "notes.txt").read_text() == "personal notes"
+
+
+def test_interrupted_archive_build_keeps_last_complete_archive(
+    tmp_path, monkeypatch, packaging_modules,
+):
+    builder, _ = packaging_modules
+    output = builder.build(tmp_path / "plugin.zip")
+    previous = output.read_bytes()
+    original_write = zipfile.ZipFile.writestr
+    written = []
+
+    def fail_second_file(archive, *args, **kwargs):
+        written.append(True)
+        if len(written) == 2:
+            raise OSError("simulated archive failure")
+        return original_write(archive, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "writestr", fail_second_file)
+    with pytest.raises(OSError, match="archive failure"):
+        builder.build(output)
+    assert output.read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [output]
+
+
+def test_archive_build_does_not_overwrite_hard_link_target(tmp_path, packaging_modules):
+    builder, _ = packaging_modules
+    external = tmp_path / "unrelated.txt"
+    external.write_text("unrelated document")
+    output = tmp_path / "plugin.zip"
+    os.link(external, output)
+    builder.build(output)
+    assert external.read_text() == "unrelated document"
+    assert zipfile.is_zipfile(output)
+    assert not os.path.samefile(external, output)
+
+
+@pytest.mark.parametrize("relative_path", ["LICENSE", "pyproject.toml", "src/kicad_mcp/new.zip"])
+def test_archive_destination_cannot_overwrite_checkout_sources(
+    tmp_path, packaging_modules, relative_path,
+):
+    import shutil
+
+    builder, _ = packaging_modules
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    for name in ("LICENSE", "pyproject.toml"):
+        shutil.copyfile(ROOT / name, checkout / name)
+    shutil.copytree(ROOT / "plugin", checkout / "plugin")
+    package = checkout / "src" / "kicad_mcp"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# test package\n")
+    output = checkout / relative_path
+    previous = output.read_bytes() if output.exists() else None
+    with pytest.raises(ValueError, match="checkout's sources"):
+        builder.build(output, root=checkout)
+    if previous is None:
+        assert not output.exists()
+    else:
+        assert output.read_bytes() == previous
+
+
+def test_installer_invalidates_stale_bytecode_for_same_size_same_timestamp_update(
+    tmp_path, monkeypatch, packaging_modules,
+):
+    builder, installer = packaging_modules
+    destination = installer.install(tmp_path / "installed")
+    module = destination / "kicad_mcp" / "__init__.py"
+    version = builder.project_version()
+    old_version = ("1" if version[0] != "1" else "2") + version[1:]
+    module.write_bytes(module.read_bytes().replace(version.encode(), old_version.encode(), 1))
+    os.utime(module, (1234567890, 1234567890))
+    env = dict(os.environ, PYTHONPATH=str(destination))
+    command = [sys.executable, "-c", "from kicad_mcp import __version__; print(__version__)"]
+    assert subprocess.check_output(command, cwd=tmp_path, env=env, text=True).strip() == old_version
+    original_write = Path.write_bytes
+
+    def write_with_same_timestamp(path, data):
+        result = original_write(path, data)
+        os.utime(path, (1234567890, 1234567890))
+        return result
+
+    monkeypatch.setattr(Path, "write_bytes", write_with_same_timestamp)
+    installer.install(destination, overwrite=True)
+    assert subprocess.check_output(command, cwd=tmp_path, env=env, text=True).strip() == version

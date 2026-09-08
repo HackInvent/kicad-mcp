@@ -127,10 +127,14 @@ class EditingMixin:
             board = self._board()
             requested = self._layer(board, layer)
             previous = board.get_active_layer()
+
+            def restore() -> None:
+                board.set_active_layer(previous)
+                if board.get_active_layer() != previous:
+                    raise BridgeError("KiCad did not confirm restoration of the active layer.")
+
             if requested != previous:
-                with _restore_on_error(
-                    lambda: board.set_active_layer(previous), "Active layer change"
-                ):
+                with _restore_on_error(restore, "Active layer change"):
                     board.set_active_layer(requested)
                     if board.get_active_layer() != requested:
                         raise BridgeError("KiCad did not confirm the requested active layer.")
@@ -145,10 +149,14 @@ class EditingMixin:
             board = self._board()
             requested = [self._layer(board, layer) for layer in layers]
             previous = list(board.get_visible_layers())
+
+            def restore() -> None:
+                board.set_visible_layers(previous)
+                if set(board.get_visible_layers()) != set(previous):
+                    raise BridgeError("KiCad did not confirm restoration of the visible layers.")
+
             if set(requested) != set(previous):
-                with _restore_on_error(
-                    lambda: board.set_visible_layers(previous), "Layer visibility change"
-                ):
+                with _restore_on_error(restore, "Layer visibility change"):
                     board.set_visible_layers(requested)
                     visible = list(board.get_visible_layers())
                     if set(visible) != set(requested):

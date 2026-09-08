@@ -19,7 +19,7 @@ from kipy.board_types import (
     Track,
 )
 from kipy.errors import ConnectionError as KiCadConnectionError
-from kipy.geometry import Vector2
+from kipy.geometry import Angle, Vector2
 from kipy.kicad import KiCadVersion
 
 from kicad_mcp.bridge import BridgeError, KiCadBridge
@@ -343,10 +343,13 @@ def test_old_kicad_is_reported_and_rejected(setup_bridge):
     client.get_board.assert_not_called()
 
 
-@pytest.mark.parametrize("method,args", [
-    ("add_track", (0, 0, 1, 1)),
-    ("add_text", ("example", 0, 0)),
-])
+@pytest.mark.parametrize(
+    "method,args",
+    [
+        ("add_track", (0, 0, 1, 1)),
+        ("add_text", ("example", 0, 0)),
+    ],
+)
 def test_creation_without_assigned_uuid_rolls_back(setup_bridge, monkeypatch, method, args):
     bridge, board, _, _ = setup_bridge
     original_create = board.create_items
@@ -362,3 +365,81 @@ def test_creation_without_assigned_uuid_rolls_back(setup_bridge, monkeypatch, me
         getattr(bridge, method)(*args)
     assert board.events == ["begin", "create", "drop"]
     assert board.created == []
+
+
+@pytest.mark.parametrize("kind", ["polygon", "zone"])
+@pytest.mark.parametrize("initial_angle, target_angle", [(0, 90), (45, 135), (30, None)])
+def test_footprint_move_transforms_arc_nodes_holes_and_all_zone_outlines(
+    setup_bridge, kind, initial_angle, target_angle
+):
+    from kipy.board_types import BoardPolygon, Zone
+    from kipy.geometry import PolygonWithHoles
+
+    bridge, board, _, _ = setup_bridge
+    board.footprints[0].orientation = Angle.from_degrees(initial_angle)
+    polygon = PolygonWithHoles()
+    outline = polygon.proto.outline
+    outline.closed = True
+    outline.nodes.add().point.CopyFrom(Vector2.from_xy_mm(10, 20).proto)
+    arc = outline.nodes.add().arc
+    arc.start.CopyFrom(Vector2.from_xy_mm(10, 21).proto)
+    arc.mid.CopyFrom(Vector2.from_xy_mm(11, 22).proto)
+    arc.end.CopyFrom(Vector2.from_xy_mm(12, 21).proto)
+    hole = polygon.proto.holes.add()
+    hole.closed = True
+    hole.nodes.add().arc.CopyFrom(arc)
+    if kind == "polygon":
+        child = BoardPolygon()
+        child.polygons.extend([polygon, PolygonWithHoles(polygon.proto)])
+    else:
+        child = Zone()
+        child.proto.outline.polygons.extend([polygon.proto, polygon.proto])
+        filled = child.proto.filled_polygons.add()
+        filled.layer = BoardLayer.BL_F_Cu
+        filled.shapes.polygons.add().CopyFrom(polygon.proto)
+    child.id.value = "complex-child"
+    board.footprints[0].definition.add_item(child)
+    original = child.proto.SerializeToString()
+    bridge.move_footprint("R1", 30, 40, target_angle)
+    assert board.footprints[0].orientation.degrees == (
+        initial_angle if target_angle is None else target_angle
+    )
+    moved = board.footprints[0].definition.items[1]
+    if kind == "polygon":
+        polygons = list(moved.proto.shape.polygon.polygons)
+    else:
+        polygons = [*moved.proto.outline.polygons, *moved.proto.filled_polygons[0].shapes.polygons]
+    for part in polygons:
+        assert part.outline.nodes[0].point == Vector2.from_xy_mm(30, 40).proto
+        for actual in [part.outline.nodes[1].arc, part.holes[0].nodes[0].arc]:
+            # kipy's general rotation truncates floating-point results to nm.
+            expected_points = (
+                [(30_000_000, 41_000_000), (31_000_000, 42_000_000), (32_000_000, 41_000_000)]
+                if target_angle is None
+                else [(31_000_000, 40_000_000), (32_000_000, 39_000_000), (31_000_000, 38_000_000)]
+            )
+            for point, expected in zip([actual.start, actual.mid, actual.end], expected_points):
+                assert (point.x_nm, point.y_nm) == pytest.approx(expected, abs=1, rel=0)
+    assert child.proto.SerializeToString() == original
+    assert moved.id.value == "complex-child"
+
+
+def test_move_rejects_child_coordinates_that_would_overflow_kicad(setup_bridge):
+    bridge, board, _, _ = setup_bridge
+    with pytest.raises(BridgeError, match="coordinate range"):
+        bridge.move_footprint("R1", 2147.25, 20)
+    assert board.events == []
+
+
+def test_move_rejects_acknowledgment_for_another_footprint(setup_bridge, monkeypatch):
+    bridge, board, _, _ = setup_bridge
+
+    def wrong_identity(items):
+        result = clone(items[0])
+        result.id.value = "another-footprint"
+        return [result]
+
+    monkeypatch.setattr(board, "update_items", wrong_identity)
+    with pytest.raises(BridgeError, match="did not confirm"):
+        bridge.move_footprint("R1", 30, 40)
+    assert board.events == ["begin", "drop"]

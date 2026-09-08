@@ -114,6 +114,30 @@ class FakeBoard:
             result[-1] = clone(result[0])
         elif self.response == "wrong_type":
             result[0] = Pad()
+        elif self.response == "dropped_pad":
+            result[0].definition.items = [
+                child for child in result[0].definition.items if not isinstance(child, Pad)
+            ]
+        elif self.response == "moved_pad":
+            result[0].definition.pads[0].position = Vector2.from_xy_mm(100, 200)
+        elif self.response == "dropped_model":
+            result[0].definition.items = [
+                child for child in result[0].definition.items if not isinstance(child, Footprint3DModel)
+            ]
+        elif self.response == "moved_footprint":
+            result[0].position = Vector2.from_xy_mm(100, 200)
+        elif self.response == "changed_attribute":
+            result[0].attributes.not_in_schematic = True
+        elif self.response == "changed_field_presentation":
+            result[0].definition.items[0].visible = False
+        elif self.response == "reordered_children":
+            result[0].definition.items = list(reversed(result[0].definition.items))
+        elif self.response == "normalized_new_field":
+            field = next(child for child in result[0].definition.items if child.name == "Supplier")
+            field.text.attributes.proto.stroke_width.SetInParent()
+            field.text.attributes.multiline = True
+            # A future KiCad field unknown to this SDK is not a geometry change.
+            field.proto.MergeFromString(b"\xc0\x3e\x01")
         return result
 
     def push_commit(self, commit, message):
@@ -614,3 +638,45 @@ def test_csv_namespaces_colliding_existing_field_headers_without_losing_data(set
     assert set(rows[1][6:]) == set(fields.values())
     assert "Field:References" in rows[0]
     assert "Field:Field:Quantity" in rows[0]
+
+
+@pytest.mark.parametrize("response", [
+    "dropped_pad", "moved_pad", "dropped_model", "moved_footprint",
+    "changed_attribute", "changed_field_presentation",
+])
+def test_bom_update_rejects_unrequested_geometry_or_metadata_changes(setup_bom, response):
+    bridge, board, _ = setup_bom
+    pad = Pad()
+    pad.id.value = "pad-original-id"
+    pad.position = Vector2.from_xy_mm(21, 30)
+    model = Footprint3DModel()
+    model.proto.filename = "resistor.step"
+    board.footprints[0].definition.items = [
+        *board.footprints[0].definition.items, pad, model,
+    ]
+    before = [item.proto.SerializeToString(deterministic=True) for item in board.footprints]
+    board.response = response
+    with pytest.raises(BridgeError, match="geometry or metadata.*cancelled"):
+        bridge.update_bom_fields(["R1"], fields={"MPN": "new-part"})
+    assert board.events == ["begin", "update", "drop"]
+    assert [item.proto.SerializeToString(deterministic=True) for item in board.footprints] == before
+
+
+def test_bom_update_accepts_kicad_reordering_of_equivalent_children(setup_bom):
+    bridge, board, _ = setup_bom
+    pad = Pad()
+    pad.id.value = "pad-original-id"
+    board.footprints[0].definition.add_item(pad)
+    board.response = "reordered_children"
+    result = bridge.update_bom_fields(["R1"], fields={"MPN": "new-part"})
+    assert result["updated_count"] == 1
+    assert board.events == ["begin", "update", "push"]
+
+
+def test_bom_update_accepts_neutral_normalization_of_new_fields(setup_bom):
+    bridge, board, _ = setup_bom
+    board.response = "normalized_new_field"
+    result = bridge.update_bom_fields(["R1"], fields={"Supplier": "Maker\nFrance"})
+    assert result["updated_count"] == 1
+    assert result["components"][0]["fields"]["Supplier"] == "Maker\nFrance"
+    assert board.events == ["begin", "update", "push"]

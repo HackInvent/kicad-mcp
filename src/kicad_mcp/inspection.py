@@ -10,7 +10,6 @@ from kipy.board_types import (
     ArcTrack,
     BoardArc,
     BoardCircle,
-    BoardLayer,
     BoardRectangle,
     BoardSegment,
     BoardShape,
@@ -405,14 +404,22 @@ class InspectionMixin:
             stackup = board.get_stackup()
             layers = []
             for layer in stackup.layers:
-                dielectric = layer.layer == BoardLayer.BL_UNDEFINED
+                dielectric = layer.type == BoardStackupLayerType.BSLT_DIELECTRIC
+                sublayers = layer.dielectric.layers
+                # KiCad serializes only sublayer 0 into layer.thickness. Account
+                # for every dielectric sublayer, as its own stackup calculation does.
+                thickness = (
+                    sum(part.thickness for part in sublayers)
+                    if dielectric and sublayers
+                    else layer.thickness
+                )
                 layers.append(
                     {
                         "layer": None if dielectric else canonical_name(layer.layer),
                         "name": layer.user_name,
                         "type": BoardStackupLayerType.Name(layer.type),
                         "enabled": layer.enabled,
-                        "thickness_mm": to_mm(layer.thickness),
+                        "thickness_mm": to_mm(thickness),
                         "material": layer.material_name,
                         "dielectric_layers": [
                             {
@@ -421,7 +428,7 @@ class InspectionMixin:
                                 "epsilon_r": sublayer.epsilon_r,
                                 "loss_tangent": sublayer.loss_tangent,
                             }
-                            for sublayer in layer.dielectric.layers
+                            for sublayer in sublayers
                         ],
                     }
                 )

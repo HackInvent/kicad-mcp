@@ -50,14 +50,33 @@ def artifact_directory() -> Path:
 @contextmanager
 def _artifact_run(prefix: str) -> Iterator[Path]:
     root = artifact_directory()
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # mkdtemp supplies a unique directory with owner-only POSIX permissions,
-    # including when the configured parent already has broader permissions.
-    directory = Path(tempfile.mkdtemp(prefix=f"{prefix}-", dir=root))
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # mkdtemp supplies a unique directory with owner-only POSIX permissions,
+        # including when the configured parent already has broader permissions.
+        directory = Path(tempfile.mkdtemp(prefix=f"{prefix}-", dir=root))
+    except OSError:
+        raise BridgeError(
+            "Cannot create the artifact directory. Check KICAD_MCP_ARTIFACT_DIR, "
+            "free disk space, and directory permissions."
+        ) from None
     try:
         yield directory
-    except BaseException:
-        shutil.rmtree(directory)
+    except BaseException as error:
+        try:
+            shutil.rmtree(directory)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            raise BridgeError(
+                "Artifact generation failed and its temporary files could not be removed. "
+                "Check permissions in the artifact directory."
+            ) from None
+        if isinstance(error, OSError):
+            raise BridgeError(
+                "Cannot read or write artifact files. Check free disk space and "
+                "permissions in the artifact directory."
+            ) from None
         raise
 
 
@@ -72,6 +91,8 @@ def _expand_saved_variables(value: str, variables: dict[str, str]) -> str:
     for _ in range(20):
         expanded = pattern.sub(lambda m: variables.get(m[1] or m[2], m[0]), value)
         if expanded == value:
+            if any((match[1] or match[2]) in variables for match in pattern.finditer(value)):
+                raise BridgeError("The saved project's text variables contain a recursive definition.")
             return value
         value = expanded
     raise BridgeError("The saved project's text variables contain a recursive definition.")
@@ -79,10 +100,16 @@ def _expand_saved_variables(value: str, variables: dict[str, str]) -> str:
 
 def _rebase_project_path(value: str, project_dir: Path, variables: dict[str, str]) -> str:
     value = _expand_saved_variables(value, variables)
-    if value and "$" not in value and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
-        path = Path(value)
+    path = type(project_dir)(value)
+    if path.drive and not path.root:
+        raise BridgeError("A project path is relative to a Windows drive. Use an absolute path in KiCad settings.")
+    # A variable at the start may expand to an absolute global KiCad library
+    # path. A fixed relative prefix (libs/${VENDOR}/...) remains relative even
+    # when a later component is unknown, so it must use the original project.
+    variable_prefix = re.match(r"^\$(?:\{|\(|[A-Za-z_])", value)
+    if value and not variable_prefix and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
         if not path.is_absolute():
-            value = str((project_dir / path).absolute())
+            value = str(project_dir / path)
     return value
 
 
@@ -134,14 +161,19 @@ def _snapshot(board: Any, directory: Path, *, require_project: bool) -> Iterator
         if not library_table.is_file():
             raise BridgeError("The project's fp-lib-table is not a regular file.")
         inputs[library_table] = "fp-lib-table"
-    stamps = {path: path.stat() for path in inputs}
-    contents = {path: path.read_bytes() for path in inputs}
-    for path, before in stamps.items():
-        after = path.stat()
-        if (before.st_mtime_ns, before.st_size, before.st_ino) != (
-            after.st_mtime_ns, after.st_size, after.st_ino
-        ):
-            raise BridgeError("A project file changed while being copied. Wait for saving to finish and retry.")
+    try:
+        stamps = {path: path.stat() for path in inputs}
+        contents = {path: path.read_bytes() for path in inputs}
+        for path, before in stamps.items():
+            after = path.stat()
+            if (before.st_mtime_ns, before.st_size, before.st_ino) != (
+                after.st_mtime_ns, after.st_size, after.st_ino
+            ):
+                raise BridgeError("A project file changed while being copied. Wait for saving to finish and retry.")
+    except OSError:
+        raise BridgeError(
+            "Cannot read the saved PCB or project files. Check their availability and read permissions."
+        ) from None
 
     variables: dict[str, str] = {}
     if project_file in contents:
@@ -237,8 +269,11 @@ def _find_cli(major: int, cwd: Path) -> tuple[str, str]:
 def _artifact(path: Path, directory: Path) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(directory.resolve()):
         raise BridgeError("KiCad CLI produced an invalid artifact path.")
+    size = path.stat().st_size
+    if size == 0:
+        raise BridgeError("KiCad CLI produced an empty artifact file.")
     path.chmod(0o600)
-    return {"name": path.relative_to(directory).as_posix(), "path": str(path), "size_bytes": path.stat().st_size}
+    return {"name": path.relative_to(directory).as_posix(), "path": str(path), "size_bytes": size}
 
 
 def _read_drc_report(path: Path) -> tuple[dict[str, int], list[dict[str, Any]]]:
@@ -251,6 +286,11 @@ def _read_drc_report(path: Path) -> tuple[dict[str, int], list[dict[str, Any]]]:
             items = report[category]
             if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
                 raise ValueError("Invalid violation list")
+            for item in items:
+                if not isinstance(item.get("severity"), str) or not item["severity"]:
+                    raise ValueError("Invalid violation severity")
+                if not isinstance(item.get("excluded", False), bool):
+                    raise ValueError("Invalid violation exclusion")
             violations.extend({**item, "category": category} for item in items)
     except (ValueError, KeyError, TypeError):
         raise BridgeError("KiCad CLI produced an invalid DRC JSON report.") from None

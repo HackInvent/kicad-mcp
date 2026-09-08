@@ -12,6 +12,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import pytest
 
+from kicad_mcp import __version__
 from kicad_mcp.__main__ import main, request_session, session_lock, session_path, write_session
 
 
@@ -90,6 +91,7 @@ def test_real_stdio_client_initialization_and_disconnected_kicad(tmp_path):
             async with ClientSession(read, write) as session:
                 info = await session.initialize()
                 assert info.serverInfo.name == "hackinvent-kicad-mcp"
+                assert info.serverInfo.version == __version__
                 tools = await session.list_tools()
                 assert len(tools.tools) == 15
                 result = await session.call_tool("kicad_status", {})
@@ -127,3 +129,51 @@ def test_session_lock_excludes_simultaneous_startups_and_releases(tmp_path):
                 pytest.fail("A second startup acquired the same session lock")
     with session_lock(path):
         pass
+
+
+@pytest.mark.parametrize("data", [
+    {"url": 123, "token": "test-token"},
+    {"url": ["http://127.0.0.1:8765/mcp"], "token": "test-token"},
+])
+def test_malformed_session_records_do_not_break_discovery(tmp_path, data):
+    from kicad_mcp.__main__ import active_sessions
+    write_session(tmp_path / "broken.json", data)
+    assert active_sessions(tmp_path) == []
+
+
+@pytest.mark.parametrize("payload", [[], None, "running"])
+def test_non_object_health_responses_are_rejected(monkeypatch, payload):
+    from unittest.mock import Mock
+    connection = Mock()
+    response = connection.getresponse.return_value
+    response.status = 200
+    response.read.return_value = json.dumps(payload).encode()
+    monkeypatch.setattr("kicad_mcp.__main__.http.client.HTTPConnection", lambda *a, **k: connection)
+    with pytest.raises(ValueError, match="response"):
+        request_session({"url": "http://127.0.0.1:8765/mcp", "token": "test-token"}, "/health")
+    connection.close.assert_called_once()
+
+
+@pytest.mark.parametrize("read_only", [True, False])
+def test_repeated_start_cannot_silently_ignore_requested_access_mode(tmp_path, monkeypatch, read_only):
+    from argparse import Namespace
+    from kicad_mcp.__main__ import serve_http
+    args = Namespace(state_dir=tmp_path, socket="kicad.sock", read_only=read_only)
+    record = {"url": "http://127.0.0.1:8765/mcp", "read_only": not read_only}
+    monkeypatch.setattr("kicad_mcp.__main__.active_sessions", lambda *a: [(session_path(tmp_path, args.socket), record)])
+    with pytest.raises(ValueError, match="Stop"):
+        serve_http(args, None)
+
+
+@pytest.mark.parametrize("token", ["secret-\n-newline", "secret-\u00e9-nonascii"])
+def test_invalid_fixed_token_fails_without_publishing_session_or_secret(tmp_path, token):
+    env = process_environment(tmp_path)
+    env["KICAD_MCP_TOKEN"] = token
+    result = subprocess.run(
+        [sys.executable, "-m", "kicad_mcp", "serve", "--transport", "streamable-http", "--port", "0"],
+        env=env, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 1
+    assert "token" in result.stderr and "ASCII" in result.stderr
+    assert "secret-" not in result.stderr
+    assert not list(tmp_path.glob("*.json"))
